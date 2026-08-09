@@ -159,3 +159,46 @@ func (c Client) NotificationShow(ctx context.Context, title, body string) error 
 	_, err := c.Call(ctx, "notification", "show", title, "--body", body)
 	return err
 }
+
+type PaneLayout struct {
+	Area struct {
+		Width int `json:"width"`
+	} `json:"area"`
+	Panes []struct {
+		PaneID string `json:"pane_id"`
+		Rect   struct {
+			Width int `json:"width"`
+		} `json:"rect"`
+	} `json:"panes"`
+}
+
+func (c Client) PluginPaneOpen(ctx context.Context, target, author string) (string, error) {
+	raw, err := c.Call(ctx, "plugin", "pane", "open", "--plugin", "herdr-review-loop", "--entrypoint", "panel", "--placement", "split", "--direction", "right", "--target-pane", target, "--no-focus", "--env", "HERDR_REVIEW_LOOP_AUTHOR="+author)
+	if err != nil {
+		return "", err
+	}
+	var result struct {
+		PaneID string `json:"pane_id"`
+	}
+	if err = json.Unmarshal(raw, &result); err != nil {
+		return "", err
+	}
+	return result.PaneID, nil
+}
+func (c Client) PaneLayout(ctx context.Context, pane string) (PaneLayout, error) {
+	raw, err := c.Call(ctx, "pane", "layout", "--pane", pane)
+	if err != nil {
+		return PaneLayout{}, err
+	}
+	var result struct {
+		Layout PaneLayout `json:"layout"`
+	}
+	if err = json.Unmarshal(raw, &result); err != nil {
+		return PaneLayout{}, err
+	}
+	return result.Layout, nil
+}
+func (c Client) PaneResize(ctx context.Context, pane, direction string, amount int) error {
+	_, err := c.Call(ctx, "pane", "resize", "--pane", pane, "--direction", direction, "--amount", fmt.Sprintf("%d", amount))
+	return err
+}

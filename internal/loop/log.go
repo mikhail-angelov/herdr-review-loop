@@ -57,11 +57,12 @@ func Phase(log string) string {
 	var phase string
 	for _, line := range strings.Split(log, "\n") {
 		if index := strings.Index(line, "--- iteration "); index >= 0 {
+			iteration := strings.TrimPrefix(strings.SplitN(line[index:], ":", 2)[0], "--- iteration ")
 			if strings.Contains(line[index:], ": review") {
-				phase = "reviewing"
+				phase = iteration + " reviewing"
 			}
 			if strings.Contains(line[index:], ": apply") {
-				phase = "applying"
+				phase = iteration + " applying"
 			}
 		}
 	}

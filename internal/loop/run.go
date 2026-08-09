@@ -17,6 +17,9 @@ type Client interface {
 	AgentList(context.Context) ([]herdr.Agent, error)
 	WorkspaceReportMetadata(context.Context, string, string, bool) error
 	NotificationShow(context.Context, string, string) error
+	PluginPaneOpen(context.Context, string, string) (string, error)
+	PaneLayout(context.Context, string) (herdr.PaneLayout, error)
+	PaneResize(context.Context, string, string, int) error
 }
 type Run struct {
 	Client      Client
@@ -38,13 +41,6 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	if dryRun {
-		_, err := fmt.Fprintf(os.Stdout, "author: %s\nreviewer: %s\n", herdr.Describe(author), herdr.Describe(reviewer))
-		return err
-	}
-	if err := r.Log.Write(fmt.Sprintf("author %s; review by %s", herdr.Describe(author), herdr.Describe(reviewer))); err != nil {
-		return err
-	}
 	repository, err := r.Environment.Repository()
 	if err != nil {
 		return err
@@ -54,12 +50,38 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		return err
 	}
 	defer func() { _ = review.Close() }()
+	if dryRun {
+		_, err := fmt.Fprintf(os.Stdout, "author: %s\nreviewer: %s\n", herdr.Describe(author), herdr.Describe(reviewer))
+		return err
+	}
+	if err := r.Log.Write(fmt.Sprintf("author %s; review by %s", herdr.Describe(author), herdr.Describe(reviewer))); err != nil {
+		return err
+	}
 	lock, err := AcquireLock(r.Environment.StateDir, author.WorkspaceID)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = lock.Release() }()
 	defer func() { _ = r.Client.WorkspaceReportMetadata(context.Background(), author.WorkspaceID, "", true) }()
+	if pane, openErr := r.Client.PluginPaneOpen(ctx, author.PaneID, author.PaneID); openErr != nil {
+		_ = r.Log.Write("panel open failed: " + openErr.Error())
+	} else if layout, layoutErr := r.Client.PaneLayout(ctx, pane); layoutErr != nil {
+		_ = r.Log.Write("panel layout failed: " + layoutErr.Error())
+	} else {
+		current := 0
+		for _, candidate := range layout.Panes {
+			if candidate.PaneID == pane {
+				current = candidate.Rect.Width
+				break
+			}
+		}
+		target := PanelWidth(layout.Area.Width)
+		if direction, amount, resize := ResizeDirection(current, target); resize {
+			if resizeErr := r.Client.PaneResize(ctx, pane, direction, amount); resizeErr != nil {
+				_ = r.Log.Write("panel resize failed: " + resizeErr.Error())
+			}
+		}
+	}
 	runID := strings.NewReplacer(":", "-", ".", "-").Replace(time.Now().UTC().Format(time.RFC3339Nano))
 	for iteration := 1; iteration <= r.Config.MaxIterations; iteration++ {
 		if err := r.Client.WorkspaceReportMetadata(ctx, author.WorkspaceID, fmt.Sprintf("review %d/%d", iteration, r.Config.MaxIterations), false); err != nil {

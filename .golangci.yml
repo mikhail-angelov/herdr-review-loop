@@ -2,10 +2,9 @@ version: "2"
 
 linters:
   default: standard
-
-issues:
   exclusions:
-    - path: _test\\.go
-      linters:
-        - staticcheck
-      text: "SA5011"
+    rules:
+      - path: '_test\.go'
+        linters:
+          - staticcheck
+        text: "SA5011"

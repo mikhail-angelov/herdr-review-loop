@@ -110,7 +110,7 @@ func IsHeld(stateDir string) (bool, error) {
 		return false, err
 	}
 	defer func() { _ = file.Close() }()
-	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_SH|unix.LOCK_NB); err != nil {
 		if err == unix.EWOULDBLOCK || err == unix.EAGAIN {
 			return true, nil
 		}

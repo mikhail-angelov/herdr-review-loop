@@ -223,8 +223,13 @@ func Show(key string, values Values) string {
 
 func showDuration(value time.Duration) string {
 	text := value.String()
-	text = strings.TrimSuffix(text, "0s")
-	return strings.TrimSuffix(text, "0m")
+	if strings.HasSuffix(text, "h0m0s") {
+		return strings.TrimSuffix(text, "0m0s")
+	}
+	if strings.HasSuffix(text, "m0s") {
+		return strings.TrimSuffix(text, "0s")
+	}
+	return text
 }
 
 func setJSON(values *Values, key string, value any) error {

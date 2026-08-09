@@ -2,12 +2,15 @@ package ui
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
 )
+
+var errEditCancelled = errors.New("edit cancelled")
 
 func DumpSettings(out *os.File, directory string, values config.Values) {
 	_, _ = fmt.Fprintln(out, config.Path(directory))
@@ -77,6 +80,10 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 			terminal.Frame("\x1b[1m" + fields[selected].Label + "\x1b[0m: ")
 			line, err := readRawLine(reader, out)
 			if err != nil {
+				if errors.Is(err, errEditCancelled) {
+					message = "edit cancelled"
+					continue
+				}
 				return err
 			}
 			parsed, err := config.Parse(fields[selected].Key, strings.TrimSpace(line))
@@ -98,6 +105,8 @@ func readRawLine(reader *bufio.Reader, out *os.File) (string, error) {
 			return "", err
 		}
 		switch key {
+		case 27:
+			return "", errEditCancelled
 		case '\r', '\n':
 			_, _ = fmt.Fprint(out, "\r\n")
 			return line.String(), nil
@@ -109,8 +118,10 @@ func readRawLine(reader *bufio.Reader, out *os.File) (string, error) {
 				_, _ = fmt.Fprint(out, "\b \b")
 			}
 		default:
-			line.WriteByte(key)
-			_, _ = fmt.Fprintf(out, "%c", key)
+			if key >= 32 && key != 127 {
+				line.WriteByte(key)
+				_, _ = fmt.Fprintf(out, "%c", key)
+			}
 		}
 	}
 }

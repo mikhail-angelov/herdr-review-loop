@@ -19,12 +19,13 @@ func PanelWidth(workspaceWidth int) int {
 	return width
 }
 
-func ResizeDirection(current, target int) (string, int, bool) {
+func ResizeDirection(current, target, workspace int) (string, float64, bool) {
 	if target == 0 || current-target >= -1 && current-target <= 1 {
 		return "", 0, false
 	}
-	if current < target {
-		return "right", target - current, true
+	difference := current - target
+	if difference > 0 {
+		return "right", float64(difference) / float64(workspace), true
 	}
-	return "left", current - target, true
+	return "left", float64(-difference) / float64(workspace), true
 }

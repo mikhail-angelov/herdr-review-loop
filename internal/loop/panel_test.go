@@ -11,11 +11,11 @@ func TestPanelWidth(t *testing.T) {
 	}
 }
 func TestResizeDirection(t *testing.T) {
-	direction, amount, ok := ResizeDirection(30, 40)
-	if !ok || direction != "right" || amount != 10 {
-		t.Fatalf("got %q %d %v", direction, amount, ok)
+	direction, amount, ok := ResizeDirection(30, 40, 100)
+	if !ok || direction != "left" || amount != 0.1 {
+		t.Fatalf("got %q %f %v", direction, amount, ok)
 	}
-	if _, _, ok := ResizeDirection(40, 41); ok {
+	if _, _, ok := ResizeDirection(40, 41, 100); ok {
 		t.Fatal("one column should not resize")
 	}
 }

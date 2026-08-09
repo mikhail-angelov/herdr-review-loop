@@ -19,7 +19,7 @@ type Client interface {
 	NotificationShow(context.Context, string, string) error
 	PluginPaneOpen(context.Context, string, string) (string, error)
 	PaneLayout(context.Context, string) (herdr.PaneLayout, error)
-	PaneResize(context.Context, string, string, int) error
+	PaneResize(context.Context, string, string, float64) error
 }
 type Run struct {
 	Client      Client
@@ -71,16 +71,22 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		_ = r.Log.Write("panel layout failed: " + layoutErr.Error())
 	} else {
 		current := 0
+		found := false
 		for _, candidate := range layout.Panes {
 			if candidate.PaneID == pane {
 				current = candidate.Rect.Width
+				found = true
 				break
 			}
 		}
-		target := PanelWidth(layout.Area.Width)
-		if direction, amount, resize := ResizeDirection(current, target); resize {
-			if resizeErr := r.Client.PaneResize(ctx, pane, direction, amount); resizeErr != nil {
-				_ = r.Log.Write("panel resize failed: " + resizeErr.Error())
+		if !found {
+			_ = r.Log.Write("panel: " + pane + " is not in the layout yet")
+		} else {
+			target := PanelWidth(layout.Area.Width)
+			if direction, amount, resize := ResizeDirection(current, target, layout.Area.Width); resize {
+				if resizeErr := r.Client.PaneResize(ctx, pane, direction, amount); resizeErr != nil {
+					_ = r.Log.Write("panel resize failed: " + resizeErr.Error())
+				}
 			}
 		}
 	}

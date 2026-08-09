@@ -78,7 +78,9 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 	message := ""
 	for {
 		state := refresh()
-		state.Message = message
+		if message != "" {
+			state.Message = message
+		}
 		width, rows := terminal.Size()
 		terminal.Frame(PanelView(state, width, rows))
 		select {

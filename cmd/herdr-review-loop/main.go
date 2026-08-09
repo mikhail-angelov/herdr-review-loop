@@ -157,6 +157,7 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		if err := command.Start(); err != nil {
 			return err.Error()
 		}
+		go func() { _ = command.Wait() }()
 		return "review started"
 	}, func() string {
 		if err := stopRun(client, environment); err != nil {

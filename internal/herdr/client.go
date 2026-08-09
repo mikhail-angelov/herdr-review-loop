@@ -178,12 +178,19 @@ func (c Client) PluginPaneOpen(ctx context.Context, target, author string) (stri
 		return "", err
 	}
 	var result struct {
-		PaneID string `json:"pane_id"`
+		PluginPane struct {
+			Pane struct {
+				PaneID string `json:"pane_id"`
+			} `json:"pane"`
+		} `json:"plugin_pane"`
 	}
 	if err = json.Unmarshal(raw, &result); err != nil {
 		return "", err
 	}
-	return result.PaneID, nil
+	if result.PluginPane.Pane.PaneID == "" {
+		return "", fmt.Errorf("plugin pane open returned no pane id")
+	}
+	return result.PluginPane.Pane.PaneID, nil
 }
 func (c Client) PaneLayout(ctx context.Context, pane string) (PaneLayout, error) {
 	raw, err := c.Call(ctx, "pane", "layout", "--pane", pane)
@@ -198,8 +205,8 @@ func (c Client) PaneLayout(ctx context.Context, pane string) (PaneLayout, error)
 	}
 	return result.Layout, nil
 }
-func (c Client) PaneResize(ctx context.Context, pane, direction string, amount int) error {
-	_, err := c.Call(ctx, "pane", "resize", "--pane", pane, "--direction", direction, "--amount", fmt.Sprintf("%d", amount))
+func (c Client) PaneResize(ctx context.Context, pane, direction string, amount float64) error {
+	_, err := c.Call(ctx, "pane", "resize", "--pane", pane, "--direction", direction, "--amount", fmt.Sprintf("%.3f", amount))
 	return err
 }
 func (c Client) PluginPaneFocus(ctx context.Context, pane string) error {

@@ -1,2 +1,8 @@
 .claude
 docs/reference
+bin/herdr-review-loop
+dist/
+run.lock
+herdr-review-loop.log
+history/
+panel.*.json

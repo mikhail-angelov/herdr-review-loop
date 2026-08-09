@@ -1,0 +1,55 @@
+id = "herdr-review-loop"
+name = "herdr-review-loop"
+version = "0.1.0"
+min_herdr_version = "0.7.5"
+description = "Review loop between the agent you are in and a reviewer agent in the same workspace."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["bash", "bin/ensure-binary.sh", "--in-tree"]
+
+[[actions]]
+id = "review"
+title = "Run review loop"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/run.sh", "review"]
+
+[[actions]]
+id = "pair"
+title = "Show review pair"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/run.sh", "review", "--dry-run"]
+
+[[actions]]
+id = "stop"
+title = "Cancel review loop"
+contexts = ["global", "pane", "workspace"]
+command = ["bash", "bin/run.sh", "stop"]
+
+[[actions]]
+id = "panel"
+title = "Open review panel"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/run.sh", "open-panel"]
+
+[[actions]]
+id = "settings"
+title = "Open review settings"
+contexts = ["global", "pane", "workspace"]
+command = ["bash", "bin/run.sh", "open-settings"]
+
+[[panes]]
+id = "panel"
+title = "herdr-review-loop"
+description = "Start, stop and watch the review loop beside the agent being reviewed."
+placement = "split"
+command = ["bash", "bin/run-panel.sh"]
+
+[[panes]]
+id = "settings"
+title = "herdr-review-loop settings"
+description = "Edit the review loop settings and cancel a running loop."
+placement = "popup"
+width = "72%"
+height = "60%"
+command = ["bash", "bin/run-settings.sh"]

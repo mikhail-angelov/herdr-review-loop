@@ -31,7 +31,7 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 	message := "j/k move · enter edit · d default · s save · q close"
 	reader := bufio.NewReader(in)
 	for {
-		width := terminal.Size()
+		width, _ := terminal.Size()
 		var body strings.Builder
 		fmt.Fprintf(&body, "\x1b[1mherdr-review-loop settings\x1b[0m\n%s\n\n", Clip(config.Path(directory), width))
 		for index, field := range fields {

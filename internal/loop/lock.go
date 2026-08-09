@@ -185,6 +185,10 @@ func StillTheHolder(record LockRecord) bool {
 	started, err := processStart(record.PID)
 	return err == nil && started == record.ProcessStarted
 }
+func LiveRun(stateDir string) bool {
+	record, err := Holder(stateDir)
+	return err == nil && StillTheHolder(record)
+}
 func processStart(pid int) (string, error) {
 	output, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
 	if err != nil {

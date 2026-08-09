@@ -29,11 +29,10 @@ func LoadEnvironment() (Environment, error) {
 	}
 	env := Environment{StateDir: envOr("HERDR_PLUGIN_STATE_DIR", workingDirectory), ConfigDir: envOr("HERDR_PLUGIN_CONFIG_DIR", workingDirectory), Binary: envOr("HERDR_BIN_PATH", "herdr"), PaneID: os.Getenv("HERDR_PANE_ID")}
 	raw := os.Getenv("HERDR_PLUGIN_CONTEXT_JSON")
-	if raw == "" {
-		return env, nil
-	}
-	if err := json.Unmarshal([]byte(raw), &env.Context); err != nil {
-		return Environment{}, fmt.Errorf("invalid HERDR_PLUGIN_CONTEXT_JSON: %w", err)
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &env.Context); err != nil {
+			return Environment{}, fmt.Errorf("invalid HERDR_PLUGIN_CONTEXT_JSON: %w", err)
+		}
 	}
 	if author := os.Getenv("HERDR_REVIEW_LOOP_AUTHOR"); author != "" {
 		env.Context.FocusedPaneID = author

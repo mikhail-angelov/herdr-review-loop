@@ -123,9 +123,9 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 	log := loop.Log{StateDir: environment.StateDir}
 	refresh := func() ui.PanelState {
 		tail, _ := log.Tail()
-		held, _ := loop.IsHeld(environment.StateDir)
+		held := loop.LiveRun(environment.StateDir)
 		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: loop.Phase(tail), Tail: tail, Running: held}
-		if state.Phase == "" {
+		if !held {
 			state.Phase = loop.LastOutcome(tail)
 		}
 		agents, err := client.AgentList(context.Background())

@@ -63,7 +63,9 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	}
 	defer func() { _ = lock.Release() }()
 	defer func() { _ = r.Client.WorkspaceReportMetadata(context.Background(), author.WorkspaceID, "", true) }()
-	if pane, openErr := r.Client.PluginPaneOpen(ctx, author.PaneID, author.PaneID); openErr != nil {
+	if _, live := LivePanel(r.Environment.StateDir, author.WorkspaceID); live {
+		_ = r.Log.Write("using existing panel")
+	} else if pane, openErr := r.Client.PluginPaneOpen(ctx, author.PaneID, author.PaneID); openErr != nil {
 		_ = r.Log.Write("panel open failed: " + openErr.Error())
 	} else if layout, layoutErr := r.Client.PaneLayout(ctx, pane); layoutErr != nil {
 		_ = r.Log.Write("panel layout failed: " + layoutErr.Error())

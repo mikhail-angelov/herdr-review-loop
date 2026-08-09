@@ -6,7 +6,7 @@ import (
 )
 
 func TestPanelViewClipsAndKeepsHints(t *testing.T) {
-	view := PanelView(PanelState{Author: "claude @ w:p1", Reviewer: "codex @ w:p2", Tail: "a very long log line that must be clipped"}, 32)
+	view := PanelView(PanelState{Author: "claude @ w:p1", Reviewer: "codex @ w:p2", Tail: "a very long log line that must be clipped"}, 32, 8)
 	if !strings.Contains(view, "r review") || !strings.Contains(view, "q close") {
 		t.Fatalf("unexpected view %q", view)
 	}

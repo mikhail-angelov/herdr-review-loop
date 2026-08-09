@@ -33,16 +33,16 @@ func (t *Terminal) Close() {
 	}
 	_, _ = fmt.Fprint(t.Out, "\x1b[?25h\x1b[0m\n")
 }
-func (t *Terminal) Size() int {
+func (t *Terminal) Size() (int, int) {
 	file, ok := t.Out.(*os.File)
 	if !ok {
-		return 80
+		return 80, 24
 	}
-	width, _, err := term.GetSize(int(file.Fd()))
+	width, height, err := term.GetSize(int(file.Fd()))
 	if err != nil || width < 1 {
-		return 80
+		return 80, 24
 	}
-	return width
+	return width, height
 }
 func (t *Terminal) Frame(contents string) { _, _ = fmt.Fprintf(t.Out, "\x1b[H\x1b[2J%s", contents) }
 func Clip(value string, width int) string {

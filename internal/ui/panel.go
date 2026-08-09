@@ -13,20 +13,37 @@ type PanelState struct {
 	Running                                bool
 }
 
-func PanelView(state PanelState, width int) string {
+func PanelView(state PanelState, width, rows int) string {
+	if width < 1 || rows < 1 {
+		return ""
+	}
 	status := "idle"
 	if state.Running {
 		status = "● running"
 	}
-	if width < 1 {
-		return ""
+	header := []string{Clip("\x1b[1mherdr-review-loop  "+status+"\x1b[0m", width), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
+	footer := append([]string{""}, strings.Split(Lines("r review · x stop · s settings · q close", width), "\n")...)
+	tail := []string{}
+	for _, line := range strings.Split(state.Tail, "\n") {
+		if width < 44 && strings.HasPrefix(line, "[") {
+			if end := strings.Index(line, "] "); end >= 0 {
+				line = line[end+2:]
+			}
+		}
+		tail = append(tail, strings.Split(Lines(line, width), "\n")...)
 	}
-	lines := []string{"\x1b[1mherdr-review-loop  " + status + "\x1b[0m", "author   " + state.Author, "review by " + state.Reviewer, state.Phase, strings.Repeat("─", width)}
-	for _, line := range strings.Split(Lines(state.Tail, width), "\n") {
-		lines = append(lines, Clip(line, width))
+	budget := rows - len(header) - len(footer)
+	if state.Message != "" {
+		budget--
 	}
-	lines = append(lines, "")
-	lines = append(lines, strings.Split(Lines("r review · x stop · s settings · q close", width), "\n")...)
+	if budget < 0 {
+		budget = 0
+	}
+	if len(tail) > budget {
+		tail = tail[len(tail)-budget:]
+	}
+	lines := append(header, tail...)
+	lines = append(lines, footer...)
 	if state.Message != "" {
 		lines = append(lines, Clip(state.Message, width))
 	}
@@ -37,7 +54,7 @@ func PanelView(state PanelState, width int) string {
 // and callbacks, so closing the pane cannot cancel the detached loop process.
 func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings func() string) error {
 	if !IsTTY(in) || !IsTTY(out) {
-		_, _ = fmt.Fprint(out, PanelView(refresh(), 80))
+		_, _ = fmt.Fprint(out, PanelView(refresh(), 80, 24))
 		return nil
 	}
 	terminal := &Terminal{In: in, Out: out}
@@ -62,7 +79,8 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 	for {
 		state := refresh()
 		state.Message = message
-		terminal.Frame(PanelView(state, terminal.Size()))
+		width, rows := terminal.Size()
+		terminal.Frame(PanelView(state, width, rows))
 		select {
 		case key := <-keys:
 			switch key {

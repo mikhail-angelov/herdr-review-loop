@@ -202,3 +202,7 @@ func (c Client) PaneResize(ctx context.Context, pane, direction string, amount i
 	_, err := c.Call(ctx, "pane", "resize", "--pane", pane, "--direction", direction, "--amount", fmt.Sprintf("%d", amount))
 	return err
 }
+func (c Client) PluginPaneFocus(ctx context.Context, pane string) error {
+	_, err := c.Call(ctx, "plugin", "pane", "focus", pane)
+	return err
+}

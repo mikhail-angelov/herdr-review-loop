@@ -83,6 +83,9 @@ func run(args []string) error {
 		if len(args) != 1 {
 			return errUsage
 		}
+		if existing, live := loop.LivePanel(environment.StateDir, environment.Context.WorkspaceID); live {
+			return client.PluginPaneFocus(context.Background(), existing.PaneID)
+		}
 		return openPane(context.Background(), client, "panel", environment.Context.FocusedPaneID, false)
 	case "open-settings":
 		if len(args) != 1 {
@@ -111,6 +114,12 @@ func openPane(ctx context.Context, client herdr.Client, entrypoint, target strin
 	return err
 }
 func panel(environment herdr.Environment, values config.Values, client herdr.Client) error {
+	if existing, won, err := loop.ClaimPanel(environment.StateDir, environment.Context.WorkspaceID, environment.PaneID); err != nil {
+		return err
+	} else if !won {
+		_ = client.PluginPaneFocus(context.Background(), existing.PaneID)
+		return nil
+	}
 	log := loop.Log{StateDir: environment.StateDir}
 	refresh := func() ui.PanelState {
 		tail, _ := log.Tail()

@@ -24,6 +24,69 @@ type Lock struct {
 	Record   LockRecord
 	stateDir string
 }
+type PanelRecord struct {
+	PID            int    `json:"pid"`
+	PaneID         string `json:"pane_id"`
+	ProcessStarted string `json:"process_started"`
+}
+
+func panelPath(dir, workspace string) string { return filepath.Join(dir, "panel."+workspace+".json") }
+func ClaimPanel(stateDir, workspace, paneID string) (PanelRecord, bool, error) {
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return PanelRecord{}, false, err
+	}
+	record := PanelRecord{PID: os.Getpid(), PaneID: paneID}
+	var err error
+	record.ProcessStarted, err = processStart(record.PID)
+	if err != nil {
+		return PanelRecord{}, false, err
+	}
+	path := panelPath(stateDir, workspace)
+	for attempts := 0; attempts < 2; attempts++ {
+		data, _ := json.Marshal(record)
+		file, createErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if createErr == nil {
+			_, writeErr := file.Write(append(data, '\n'))
+			closeErr := file.Close()
+			if writeErr != nil {
+				return PanelRecord{}, false, writeErr
+			}
+			return record, true, closeErr
+		}
+		existing, readErr := readPanel(path)
+		if readErr == nil && panelAlive(existing) {
+			return existing, false, nil
+		}
+		_ = os.Remove(path)
+	}
+	return PanelRecord{}, false, fmt.Errorf("cannot claim panel record")
+}
+func LivePanel(stateDir, workspace string) (PanelRecord, bool) {
+	record, err := readPanel(panelPath(stateDir, workspace))
+	if err != nil {
+		return PanelRecord{}, false
+	}
+	if panelAlive(record) {
+		return record, true
+	}
+	_ = os.Remove(panelPath(stateDir, workspace))
+	return PanelRecord{}, false
+}
+func readPanel(path string) (PanelRecord, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return PanelRecord{}, err
+	}
+	var record PanelRecord
+	if err = json.Unmarshal(data, &record); err != nil || record.PID <= 0 || record.PaneID == "" || record.ProcessStarted == "" {
+		return PanelRecord{}, fmt.Errorf("invalid panel record")
+	}
+	return record, nil
+}
+func panelAlive(record PanelRecord) bool {
+	started, err := processStart(record.PID)
+	return err == nil && started == record.ProcessStarted
+}
 
 func lockPath(dir string) string   { return filepath.Join(dir, "run.lock") }
 func recordPath(dir string) string { return filepath.Join(dir, "run.lock.json") }

@@ -50,9 +50,6 @@ func TestParse(t *testing.T) {
 	if err != nil || got != 90*time.Second {
 		t.Fatalf("got %#v %v", got, err)
 	}
-	if _, err := Parse("scope", " "); err == nil {
-		t.Fatal("accepted blank scope")
-	}
 }
 
 func TestParseAcceptsEveryFieldAndRejectsInvalidValues(t *testing.T) {
@@ -64,14 +61,13 @@ func TestParseAcceptsEveryFieldAndRejectsInvalidValues(t *testing.T) {
 		"review_timeout": "90s",
 		"fix_timeout":    "1m",
 		"reset_command":  "/new",
-		"scope":          "the working tree",
 	}
 	for _, field := range Fields() {
 		if _, err := Parse(field.Key, valid[field.Key]); err != nil {
 			t.Errorf("%s: rejected valid value: %v", field.Key, err)
 		}
 	}
-	for _, key := range []string{"max_iterations", "review_file", "review_timeout", "fix_timeout", "scope"} {
+	for _, key := range []string{"max_iterations", "review_file", "review_timeout", "fix_timeout"} {
 		if _, err := Parse(key, ""); err == nil {
 			t.Errorf("%s: accepted empty invalid value", key)
 		}

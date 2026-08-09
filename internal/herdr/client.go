@@ -87,6 +87,32 @@ func (c Client) Text(ctx context.Context, args ...string) (string, error) {
 	return string(output), nil
 }
 
+func (c Client) void(ctx context.Context, args ...string) error {
+	command := exec.CommandContext(ctx, c.Binary, args...)
+	stdout, err := command.Output()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if _, envelopeErr, ok := envelope(stdout); ok && envelopeErr != nil {
+		return envelopeErr
+	}
+	var stderr string
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		stderr = string(exit.Stderr)
+	}
+	if _, envelopeErr, ok := envelope([]byte(stderr)); ok && envelopeErr != nil {
+		return envelopeErr
+	}
+	if err != nil {
+		if stderr == "" {
+			stderr = err.Error()
+		}
+		return fmt.Errorf("herdr %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr))
+	}
+	return nil
+}
+
 func timeoutArg(timeout time.Duration) string {
 	if timeout < 0 {
 		timeout = 0
@@ -149,16 +175,13 @@ func (c Client) AgentFocus(ctx context.Context, target string) error {
 	return err
 }
 func (c Client) AgentSendKeys(ctx context.Context, target, keys string) error {
-	_, err := c.Call(ctx, "agent", "send-keys", target, keys)
-	return err
+	return c.void(ctx, "agent", "send-keys", target, keys)
 }
 func (c Client) PaneSendText(ctx context.Context, pane, value string) error {
-	_, err := c.Call(ctx, "pane", "send-text", pane, value)
-	return err
+	return c.void(ctx, "pane", "send-text", pane, value)
 }
 func (c Client) PaneSendKeys(ctx context.Context, pane, keys string) error {
-	_, err := c.Call(ctx, "pane", "send-keys", pane, keys)
-	return err
+	return c.void(ctx, "pane", "send-keys", pane, keys)
 }
 func (c Client) PaneRead(ctx context.Context, pane string) (string, error) {
 	return c.Text(ctx, "pane", "read", pane, "--source", "visible", "--format", "text")
@@ -170,8 +193,7 @@ func (c Client) WorkspaceReportMetadata(ctx context.Context, workspace, phase st
 	} else {
 		args = append(args, "--token", "review="+phase)
 	}
-	_, err := c.Call(ctx, args...)
-	return err
+	return c.void(ctx, args...)
 }
 func (c Client) NotificationShow(ctx context.Context, title, body string) error {
 	_, err := c.Call(ctx, "notification", "show", title, "--body", body)

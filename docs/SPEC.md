@@ -29,7 +29,7 @@ spent:
 
 ```
 reviewer (session wiped) → writes review.md
-        → author applies the findings it agrees with
+        → author (session wiped) applies the findings and rewrites review-summary.md
         → reviewer (session wiped) re-reviews
         → …  clean | budget spent | agent blocked
 ```
@@ -170,8 +170,9 @@ is a fatal error.
 ### 5.3 The loop
 
 ```
-resolve review-file path (§5.4) · list agents · pick pair · log the run header
+resolve review-file and review-summary paths (§5.4) · list agents · pick pair · log the run header
 dry-run → stop here
+acquire the run lock · delete a stale review-summary.md
 mkdir the review file's parent · open the panel if the workspace has none (§5.7)
 
 for i in 1..max_iterations:
@@ -188,7 +189,9 @@ for i in 1..max_iterations:
     log "findings reported (N lines)"
     i == max → break
     progress token "fix i/max" · log "--- iteration i/max: apply"
-    focus author · prompt author with the fix prompt, wait for it to settle
+    focus author · read the current summary · settle author · reset author session (§5.5)
+    settle author · prompt author with the fix prompt, wait for it to settle
+    require a freshly written, non-empty review-summary.md within 15s
 exit 1 with "stopped after max iterations with findings still open"
 ```
 
@@ -198,8 +201,9 @@ Ordering constraints that must survive the rewrite:
   flight cannot recreate it after the delete and have the loop read a stale verdict.
 - `askedAt` is captured before the prompt; a verdict file older than it is not this
   round's verdict.
-- The author's session is **never** reset: which findings it rejected, and why, is the
-  state worth keeping.
+- The author's session is reset before every fix turn. `review-summary.md` is the compact
+  durable record of applied, rejected, and deferred decisions that replaces retained
+  conversational context.
 
 Early exits: an agent reporting `blocked` (it is asking the user something) → focus it
 and fail with "answer it, then run the loop again"; the reviewer settling without
@@ -210,6 +214,10 @@ writing the file within 15s → fail; another run already holding the lock → r
 Every round deletes this path before asking for a verdict, so containment is not a
 nicety: a `review_file` that resolves outside the repository turns a typo in a config
 file into a delete of something nobody was thinking about.
+
+`review-summary.md` is also deleted once, after the run lock is acquired and before the
+first review, so decisions from a prior run cannot leak into the new one. It is fixed at
+the repository root and uses the same rooted-file containment as `review_file`.
 
 - **Enforcement is structural, not a prior check.** The run opens the repository once with
   `os.OpenRoot(repo)` and performs *every* review-file operation — `Remove`, `Lstat`,
@@ -232,11 +240,11 @@ file into a delete of something nobody was thinking about.
   from…` — is logged and treated as findings. Being wrong in the direction of another
   round is the safe direction.
 
-### 5.5 Resetting the reviewer's session
+### 5.5 Resetting agent sessions
 
 Built-in commands by agent kind: `claude`→`/clear`, `gemini`→`/clear`, `codex`→`/new`,
-`opencode`→`/new`. `reset_command` overrides, or supplies one for an unknown kind; with
-neither, the round runs on the existing context and says so in the log.
+`opencode`→`/new`. `reset_command` supplies a command only for an unknown agent kind.
+A missing command for either agent fails the loop rather than retaining context.
 
 The command is **typed into the input line**, not sent as a prompt: `agent prompt`
 delivers text the way a paste does, and a pasted `/new` is a message the agent drops,
@@ -248,7 +256,7 @@ sleep 400ms
 last 6 non-empty visible lines of `pane read <pane> --source visible --format text`
     contain the command?  → yes: pane send-keys <pane> enter, sleep 1500ms, done
                             no:  pane send-keys <pane> esc, sleep 400ms, retry (3 total)
-3 failed attempts → log "kept being dropped", continue with the existing context
+3 failed attempts → log "kept being dropped", fail the loop
 ```
 
 Only the bottom of the screen is inspected: a review that quotes the command is no
@@ -439,9 +447,11 @@ therefore part of this specification — see **Appendix A**, which carries it in
 this repository is self-contained and nothing has to be fetched from the Node repo to
 know what the loop says.
 
-Prompts live in `internal/loop/prompts.go` as templates over `{scope}` (from config),
-`{review_path}` (absolute), `{iteration}` and `{max}`, with a golden test pinning the
-rendered output for round 1 and a later round, so an accidental edit shows up in a diff.
+Prompts live in `internal/loop/prompts.go` as templates over `{review_path}` and
+`{summary_path}` (absolute), `{iteration}` and `{max}`. They always constrain the review
+to uncommitted changes. The reviewer becomes progressively narrower after round 1, and
+the author becomes progressively more conservative after round 1. Golden tests pin the
+rendered output for representative rounds.
 
 ---
 
@@ -459,8 +469,7 @@ config.
 | `review_file` | repo-relative path | `review.md` | The reviewer's only output |
 | `review_timeout` | duration | `"30m"` | Budget for one review round |
 | `fix_timeout` | duration | `"30m"` | Budget for the author to apply a review |
-| `reset_command` | optional string | `null` | Overrides the built-in reset for the reviewer's kind |
-| `scope` | non-empty string | "the uncommitted changes in the working tree, plus any commits on the current branch that are not on the default branch" | Pasted into the reviewer's prompt verbatim |
+| `reset_command` | optional string | `null` | Reset command for agent kinds without a built-in command |
 
 Validation rules, shared between the file loader and the settings pane so a value is
 judged the same whichever way it arrives:
@@ -785,68 +794,42 @@ already paid for once.
 
 ---
 
-## Appendix A — Prompt templates (normative)
+## Appendix A — Prompt contracts (normative)
 
-Copied from the Node implementation's `index.js` (`reviewPrompt`, `fixPrompt`) at
-`hreview@517458be48ea0e72c6c035a542517cae16547d60`. **This appendix is the normative
-copy**; the upstream repository is being deleted and is not needed to maintain this one.
+`internal/loop/prompts.go` is the canonical text and the checked-in golden fixtures pin
+representative output. This appendix records the required behaviour.
 
 ### A.1 Review prompt
 
-The opening paragraph on **round 1**:
+Every round tells the reviewer that its session is fresh, points it to
+`{summary_path}` if it exists, and restricts the task to uncommitted working-tree
+changes. It must not report findings about either loop file. It writes the STATUS-headed
+review to `{review_path}` and never edits code.
 
-```
-You are the reviewer in an automated review loop. This is round {iteration} of {max}.
-```
-
-The opening paragraph on **every later round** — the reviewer's session was just wiped,
-so it must be told what it cannot remember, and told not to invent it:
-
-```
-You are the reviewer in an automated review loop. This is round {iteration} of {max}, and your session was cleared beforehand, so you have no memory of the earlier rounds and should not try to reconstruct them. The code has already been through {iteration-1} round(s) of review; some findings were applied and others were deliberately rejected by the author. Judge the code as it stands now, on its own merits.
-```
-
-The body, identical on every round, appended after a blank line:
-
-```
-
-Review {scope}.
-
-Write the review to {review_path}, overwriting whatever is there.
-The first line of that file must be exactly one of:
-
-STATUS: CLEAN
-STATUS: FINDINGS
-
-Use STATUS: CLEAN only when nothing is left that is worth changing. Otherwise use
-STATUS: FINDINGS and list every finding underneath, one per bullet, as:
-
-- [high|medium|low] path/to/file.ext:LINE — what is wrong — what to do about it
-
-Do not edit any code yourself; the review file is your only output. Reply with just
-the path when you are done.
-```
+- Round 1 reviews correctness, security, and missing tests; low findings are allowed only
+  when local and clearly worthwhile.
+- Round 2 verifies the first round's changes and reports only remaining high or medium
+  findings. Rejected or deferred decisions are closed unless new evidence changes impact.
+- Round 3 and later report only regressions introduced by fixes or high-severity issues.
 
 ### A.2 Fix prompt
 
-```
-A review of your changes is in {review_path}.
+The author always starts a fresh session. It reads `{review_path}`, `{summary_path}` if
+present, and the current uncommitted diff; it must not edit `{review_path}`. Before
+finishing it must rewrite `{summary_path}` to at most 20 short bullets, retaining current
+applied decisions and still-relevant rejected or deferred decisions with reasons.
 
-Read it and apply every finding you agree with. Deliberately skip the ones you
-consider wrong or out of scope. Do not edit {review_path}.
-
-When you are done, summarize in a few lines what you applied and what you rejected
-and why — the reviewer will re-review from the code, not from your summary.
-```
+- Round 1 accepts justified high findings but rejects or defers broad low/medium work.
+- Round 2 accepts remaining high findings and only local medium fixes.
+- Round 3 and later accepts only high findings or regressions caused by earlier fixes.
 
 ### A.3 Notes for the implementation
 
-- `{scope}` is substituted verbatim from config (§6) and is a noun phrase: the sentence
-  reads `Review the uncommitted changes in the working tree, plus …`.
 - `{review_path}` is the absolute path resolved in §5.4, not the configured relative one —
   the reviewer is told where to write, not asked to build a path.
+- `{summary_path}` is the fixed repo-root file `review-summary.md`; it cannot also be the
+  configured review file.
 - Line breaks are significant. The em dashes in the finding format are U+2014 and are what
   a reviewer copies into its output; the STATUS lines must survive as their own lines,
   because §5.4 matches the first non-empty line exactly.
-- The golden test renders both prompts for `{iteration}` = 1 and 3 with a fixed scope and
-  path, and compares against checked-in fixtures.
+- Golden tests render reviewer prompts for rounds 1 and 3 and an author prompt for round 2.

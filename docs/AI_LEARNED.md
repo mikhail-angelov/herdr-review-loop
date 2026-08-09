@@ -70,3 +70,56 @@ Comparing a second-rounded filesystem `mtime` with nanosecond-precision `time.No
 ### Ruled-out approaches
 
 - Tried a strict `mtime >= askedAt` comparison; it rejects a verdict whose timestamp is rounded to the same second as the prompt.
+
+## 2026-08-09 — Recover Go tests from a full temporary volume
+
+### Goal
+
+Restore Go test runs when `t.TempDir` fails with `no space left on device`.
+
+### Golden path
+
+1. Confirm the failure is storage-related with `df -h <temporary-directory>`.
+2. Check the Go build-cache size with `du -sh "$(go env GOCACHE)"`.
+3. Run `go clean -cache` and rerun `go test ./...`.
+
+### Verification
+
+With only 121 MiB free, `go test ./...` could not create test temporary directories. Clearing a 526 MiB Go build-cache increased free space to 653 MiB; `go test ./...` and `go vet ./...` then passed.
+
+### Failure pattern avoided
+
+Repeated test runs fail before exercising code because `testing.T.TempDir` cannot create its temporary directory.
+
+### Ruled-out approaches
+
+- Retried the full test suite without freeing space; it failed again while creating `TempDir`.
+
+### Notes
+
+`go clean -cache` removes rebuildable artifacts only; it does not modify repository files.
+
+## 2026-08-09 — Herdr void commands return empty stdout
+
+### Goal
+
+Allow review-loop commands that inject text or report display metadata to succeed with the current Herdr CLI.
+
+### Golden path
+
+1. Inspect the plugin log when a reset command appears in a pane but the review does not advance.
+2. For Herdr commands with no useful response (`agent send-keys`, `pane send-text`, `pane send-keys`, and `workspace report-metadata`), use `Client.void`: empty successful stdout is accepted, while JSON error envelopes from stdout or stderr are decoded and returned.
+3. Keep `Client.Call` for commands whose result is parsed as JSON.
+
+### Verification
+
+`TestVoidCommandsAcceptEmptySuccessfulOutput` first failed because each command returned `invalid JSON` for a successful empty response, then passed with `Client.void`; it also verifies JSON error envelopes on stdout. `go test ./...` and `go vet ./...` passed.
+
+### Failure pattern avoided
+
+`pane send-text` inserts `/clear`, but treating its empty successful response as an error stops the loop before it sends Enter; the command remains in Claude's composer and no review prompt is sent.
+
+### Ruled-out approaches
+
+- Tried using `Client.Call` for void commands; it rejected the empty successful response as invalid JSON.
+- Tried using `Client.Text` for void commands; it treated a JSON error envelope on successful stdout as ordinary text and swallowed the command failure.

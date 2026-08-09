@@ -151,7 +151,7 @@ by the phase, so a round cannot spend it several times over (§5.6 *Deadlines*):
 `Settle` (get → wait when working → fail when blocked); `SubmitAndWait`
 with the `agent_prompt_stalled` recovery (state-sequence advance check, up to 3 enter
 presses with 4 s checks, then `agent wait`) (§5.6); `ResetSession` — the
-built-in command per kind, the `reset_command` override, and the type-verify-retry dance
+built-in command per kind, the `reset_command` fallback for unknown kinds, and the type-verify-retry dance
 (`send-text` → 400 ms → last 6 non-empty visible lines → `enter` + 1500 ms; else `esc` +
 retry, 3 attempts) (§5.5).
 **Done:** fake-client tests for prompt accepted, stalled-but-advanced, stalled-then-enter

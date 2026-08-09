@@ -95,3 +95,15 @@ func TestResetSessionRetriesDroppedCommand(t *testing.T) {
 		t.Fatalf("unexpected reset interaction: %#v %#v", fake.sentText, fake.sentKeys)
 	}
 }
+
+func TestResetSessionFailsWhenCommandIsDropped(t *testing.T) {
+	fake := &fakeAgentClient{
+		visible: []string{"nothing", "nothing", "nothing"},
+		get:     func() (herdr.Agent, error) { return herdr.Agent{}, nil },
+		wait:    func() (herdr.Agent, error) { return herdr.Agent{}, nil },
+		prompt:  func() (herdr.Agent, error) { return herdr.Agent{}, errors.New("unused") },
+	}
+	if err := ResetSession(context.Background(), fake, herdr.Agent{PaneID: "p", Kind: "codex"}, "", nil); err == nil {
+		t.Fatal("accepted a session that was not reset")
+	}
+}

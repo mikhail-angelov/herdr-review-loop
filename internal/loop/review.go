@@ -23,6 +23,8 @@ var status = regexp.MustCompile(`(?i)^STATUS:\s*(CLEAN|FINDINGS)$`)
 
 const fileTimestampPrecision = time.Second
 
+const SummaryFile = "review-summary.md"
+
 func ParseVerdict(contents string) Verdict {
 	for _, line := range strings.Split(contents, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
@@ -63,6 +65,10 @@ func OpenReviewFile(repository, configured string) (*ReviewFile, error) {
 	return file, nil
 }
 
+func OpenSummaryFile(repository string) (*ReviewFile, error) {
+	return OpenReviewFile(repository, SummaryFile)
+}
+
 func (f *ReviewFile) Close() error { return f.root.Close() }
 func (f *ReviewFile) Remove() error {
 	err := f.root.Remove(f.Relative)
@@ -98,6 +104,35 @@ func (f *ReviewFile) WrittenSince(askedAt time.Time) (string, bool, error) {
 		return "", false, err
 	}
 	return contents, !info.ModTime().Before(askedAt.Truncate(fileTimestampPrecision)), nil
+}
+func (f *ReviewFile) EnsureRegular() error {
+	_, _, err := f.Read()
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+func (f *ReviewFile) WaitForChange(ctx context.Context, askedAt time.Time, timeout time.Duration) (string, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(500 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		contents, fresh, err := f.WrittenSince(askedAt)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		if err == nil && fresh && strings.TrimSpace(contents) != "" {
+			return contents, nil
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("phase ended: %w", ctx.Err())
+		case <-deadline.C:
+			return "", fmt.Errorf("was not updated")
+		case <-tick.C:
+		}
+	}
 }
 func (f *ReviewFile) WaitForVerdict(ctx context.Context, askedAt time.Time, timeout time.Duration) (string, Verdict, error) {
 	deadline := time.NewTimer(timeout)

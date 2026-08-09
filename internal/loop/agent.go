@@ -130,16 +130,28 @@ func advanced(ctx context.Context, client AgentClient, agent herdr.Agent, sequen
 	}
 }
 
-func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, configured string, log func(string)) error {
-	command := configured
-	if command == "" {
-		command = map[string]string{"claude": "/clear", "gemini": "/clear", "codex": "/new", "opencode": "/new"}[agent.Kind]
+func resetCommand(agent herdr.Agent, configured string) string {
+	command := map[string]string{"claude": "/clear", "gemini": "/clear", "codex": "/new", "opencode": "/new"}[agent.Kind]
+	if command != "" {
+		return command
 	}
+	return configured
+}
+
+func ValidateResetCommand(agent herdr.Agent, configured string) error {
+	if resetCommand(agent, configured) == "" {
+		return fmt.Errorf("no reset command for %s", herdr.Describe(agent))
+	}
+	return nil
+}
+
+func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, configured string, log func(string)) error {
+	command := resetCommand(agent, configured)
 	if command == "" {
 		if log != nil {
-			log("no reset command for " + agent.Kind + "; keeping reviewer context")
+			log("no reset command for " + agent.Kind)
 		}
-		return nil
+		return ValidateResetCommand(agent, configured)
 	}
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err := client.PaneSendText(ctx, agent.PaneID, command); err != nil {
@@ -167,9 +179,9 @@ func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, co
 		}
 	}
 	if log != nil {
-		log("reset command kept being dropped; keeping reviewer context")
+		log("reset command kept being dropped")
 	}
-	return nil
+	return fmt.Errorf("could not reset %s", herdr.Describe(agent))
 }
 func pause(ctx context.Context, duration time.Duration) bool {
 	timer := time.NewTimer(duration)

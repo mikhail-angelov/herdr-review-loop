@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-const DefaultScope = "the uncommitted changes in the working tree, plus any commits on the current branch that are not on the default branch"
-
 type Values struct {
 	ReviewerKind  string
 	ReviewerName  string
@@ -21,11 +19,10 @@ type Values struct {
 	ReviewTimeout time.Duration
 	FixTimeout    time.Duration
 	ResetCommand  string
-	Scope         string
 }
 
 func Defaults() Values {
-	return Values{MaxIterations: 10, ReviewFile: "review.md", ReviewTimeout: 30 * time.Minute, FixTimeout: 30 * time.Minute, Scope: DefaultScope}
+	return Values{MaxIterations: 10, ReviewFile: "review.md", ReviewTimeout: 30 * time.Minute, FixTimeout: 30 * time.Minute}
 }
 
 type Field struct {
@@ -41,8 +38,7 @@ func Fields() []Field {
 		{"review_file", "review file", "reviewer output, relative to the repository", "path"},
 		{"review_timeout", "review timeout", "budget for one review round", "duration"},
 		{"fix_timeout", "fix timeout", "budget for applying a review", "duration"},
-		{"reset_command", "reset command", "overrides the reviewer-kind reset command", "optional"},
-		{"scope", "scope", "pasted into the reviewer prompt", "text"},
+		{"reset_command", "reset command", "fallback reset command for unknown agent kinds", "optional"},
 	}
 }
 
@@ -109,9 +105,6 @@ func Save(dir string, values Values) (string, error) {
 	if values.ResetCommand != defaults.ResetCommand {
 		stored["reset_command"] = values.ResetCommand
 	}
-	if values.Scope != defaults.Scope {
-		stored["scope"] = values.Scope
-	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -144,11 +137,6 @@ func Parse(key, text string) (any, error) {
 	text = strings.TrimSpace(text)
 	switch key {
 	case "reviewer_kind", "reviewer_name", "reset_command":
-		return text, nil
-	case "scope":
-		if text == "" {
-			return nil, fmt.Errorf("must not be empty")
-		}
 		return text, nil
 	case "review_file":
 		return validatePath(text)
@@ -190,8 +178,6 @@ func Apply(values *Values, key string, value any) error {
 		values.FixTimeout = value.(time.Duration)
 	case "reset_command":
 		values.ResetCommand = value.(string)
-	case "scope":
-		values.Scope = value.(string)
 	default:
 		return fmt.Errorf("unknown setting")
 	}
@@ -214,8 +200,6 @@ func Show(key string, values Values) string {
 		return showDuration(values.FixTimeout)
 	case "reset_command":
 		return values.ResetCommand
-	case "scope":
-		return values.Scope
 	default:
 		return ""
 	}
@@ -243,13 +227,6 @@ func setJSON(values *Values, key string, value any) error {
 			return fmt.Errorf("must be text")
 		}
 		return setString(values, key, strings.TrimSpace(text))
-	case "scope":
-		text, ok := value.(string)
-		if !ok || strings.TrimSpace(text) == "" {
-			return fmt.Errorf("must not be empty")
-		}
-		values.Scope = text
-		return nil
 	case "review_file":
 		text, ok := value.(string)
 		if !ok {

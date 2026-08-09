@@ -47,15 +47,31 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	if err != nil {
 		return err
 	}
+	if !dryRun {
+		if err := ValidateResetCommand(author, r.Config.ResetCommand); err != nil {
+			return err
+		}
+		if err := ValidateResetCommand(reviewer, r.Config.ResetCommand); err != nil {
+			return err
+		}
+	}
 	repository, err := r.Environment.Repository()
 	if err != nil {
 		return err
+	}
+	if r.Config.ReviewFile == SummaryFile {
+		return fmt.Errorf("review_file must not be %s; it is reserved for review decisions", SummaryFile)
 	}
 	review, err := OpenReviewFile(repository, r.Config.ReviewFile)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = review.Close() }()
+	summary, err := OpenSummaryFile(repository)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = summary.Close() }()
 	if dryRun {
 		_, err := fmt.Fprintf(os.Stdout, "author: %s\nreviewer: %s\n", herdr.Describe(author), herdr.Describe(reviewer))
 		return err
@@ -65,6 +81,10 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	}
 	lock, err := AcquireLock(r.Environment.StateDir, author.WorkspaceID)
 	if err != nil {
+		return err
+	}
+	if err := summary.Remove(); err != nil {
+		_ = lock.Release()
 		return err
 	}
 	var notificationTitle, notificationMessage string
@@ -136,7 +156,7 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		}
 		askedAt := time.Now()
 		if err == nil {
-			_, err = SubmitAndWait(phase, r.Client, reviewer, ReviewPrompt(r.Config.Scope, review.Absolute, iteration, r.Config.MaxIterations))
+			_, err = SubmitAndWait(phase, r.Client, reviewer, ReviewPrompt(review.Absolute, summary.Absolute, iteration, r.Config.MaxIterations))
 		}
 		if err != nil {
 			cancel()
@@ -169,9 +189,25 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 			return abort(err)
 		}
 		phase, cancel = context.WithTimeout(ctx, r.Config.FixTimeout)
-		_, err = Settle(phase, r.Client, author)
+		err = summary.EnsureRegular()
 		if err == nil {
-			_, err = SubmitAndWait(phase, r.Client, author, FixPrompt(review.Absolute))
+			_, err = Settle(phase, r.Client, author)
+		}
+		if err == nil {
+			err = ResetSession(phase, r.Client, author, r.Config.ResetCommand, func(message string) { _ = r.Log.Write(message) })
+		}
+		if err == nil {
+			_, err = Settle(phase, r.Client, author)
+		}
+		askedAt = time.Now()
+		if err == nil {
+			_, err = SubmitAndWait(phase, r.Client, author, FixPrompt(review.Absolute, summary.Absolute, iteration))
+		}
+		if err == nil {
+			_, err = summary.WaitForChange(phase, askedAt, 15*time.Second)
+			if err != nil {
+				err = fmt.Errorf("author settled without updating %s: %w", summary.Relative, err)
+			}
 		}
 		cancel()
 		if err != nil {

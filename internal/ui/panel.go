@@ -24,7 +24,7 @@ func PanelView(state PanelState, width, rows int) string {
 		status = "● running"
 	}
 	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
-	footer := append([]string{""}, strings.Split(Lines("r review · x stop · s settings · q close", width), "\n")...)
+	footer := append([]string{""}, panelHints(state.Running, width)...)
 	tail := []string{}
 	for _, line := range strings.Split(state.Tail, "\n") {
 		if width < 44 && strings.HasPrefix(line, "[") {
@@ -32,7 +32,7 @@ func PanelView(state PanelState, width, rows int) string {
 				line = line[end+2:]
 			}
 		}
-		tail = append(tail, strings.Split(Lines(line, width), "\n")...)
+		tail = append(tail, Clip(line, width))
 	}
 	budget := rows - len(header) - len(footer)
 	if state.Message != "" {
@@ -49,7 +49,31 @@ func PanelView(state PanelState, width, rows int) string {
 	if state.Message != "" {
 		lines = append(lines, Clip(state.Message, width))
 	}
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
 	return strings.Join(lines, "\n")
+}
+
+func panelHints(running bool, width int) []string {
+	hints := []string{"r review", "s settings", "q close"}
+	if running {
+		hints = []string{"x stop", "s settings", "q close"}
+	}
+	lines := []string{""}
+	for _, hint := range hints {
+		last := len(lines) - 1
+		joined := hint
+		if lines[last] != "" {
+			joined = lines[last] + " · " + hint
+		}
+		if len([]rune(joined)) <= width {
+			lines[last] = joined
+		} else {
+			lines = append(lines, hint)
+		}
+	}
+	return lines
 }
 
 // Panel keeps no mutable loop state: each refresh gets its display state from files
@@ -90,6 +114,7 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 		terminal.Frame(PanelView(state, width, rows))
 		select {
 		case key := <-keys:
+			key = shortcut(key)
 			switch key {
 			case "q", "\x03", "esc":
 				return nil

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -32,6 +33,28 @@ type byteResult struct {
 }
 
 var errKeyTimeout = errors.New("key read timeout")
+
+// shortcut keeps physical TUI shortcuts usable with a Russian keyboard layout.
+func shortcut(key string) string {
+	switch key {
+	case "й", "Й":
+		return "q"
+	case "ы", "Ы":
+		return "s"
+	case "к", "К":
+		return "r"
+	case "ч", "Ч":
+		return "x"
+	case "в", "В":
+		return "d"
+	case "о", "О":
+		return "j"
+	case "л", "Л":
+		return "k"
+	default:
+		return key
+	}
+}
 
 func NewKeyReader(reader *bufio.Reader, input *os.File) *KeyReader {
 	bytes := make(chan byteResult, 1)
@@ -74,7 +97,12 @@ func (t *Terminal) Size() (int, int) {
 	}
 	return width, height
 }
-func (t *Terminal) Frame(contents string) { _, _ = fmt.Fprintf(t.Out, "\x1b[H\x1b[2J%s", contents) }
+func (t *Terminal) Frame(contents string) {
+	// MakeRaw disables output post-processing, so a bare LF moves down without
+	// returning to column zero. Frames are assembled with LF; write CRLF so each
+	// rendered line starts at the left edge instead of forming a staircase.
+	_, _ = fmt.Fprintf(t.Out, "\x1b[2J\x1b[H%s", strings.ReplaceAll(contents, "\n", "\r\n"))
+}
 func Clip(value string, width int) string {
 	if width < 1 {
 		return ""
@@ -117,6 +145,17 @@ func (r *KeyReader) ReadKey() (string, error) {
 		return "", err
 	}
 	if first != 27 {
+		if first >= utf8.RuneSelf {
+			sequence := []byte{first}
+			for !utf8.FullRune(sequence) {
+				next, readErr := r.readByte()
+				if readErr != nil {
+					return "", readErr
+				}
+				sequence = append(sequence, next)
+			}
+			return string(sequence), nil
+		}
 		return string(first), nil
 	}
 	sequence := []byte{first}

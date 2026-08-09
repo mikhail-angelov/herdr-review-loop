@@ -11,6 +11,8 @@ import (
 	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
 )
 
+const settingsKeys = "j/k move · enter edit · d default · s save · x cancel run · q close"
+
 func DumpSettings(out *os.File, directory string, values config.Values) {
 	_, _ = fmt.Fprintln(out, config.Path(directory))
 	for _, field := range config.Fields() {
@@ -33,7 +35,7 @@ func Settings(in, out *os.File, directory string, values config.Values, status f
 	dirty := false
 	confirmQuit := false
 	selected := 0
-	message := "j/k move · enter edit · d default · s save · x cancel run · q close"
+	message := ""
 	editing := false
 	input := ""
 	keys := make(chan keyResult, 1)
@@ -100,6 +102,7 @@ func Settings(in, out *os.File, directory string, values config.Values, status f
 			}
 			continue
 		}
+		key = shortcut(key)
 		switch key {
 		case "j", "down":
 			if selected < len(fields)-1 {
@@ -143,7 +146,7 @@ func Settings(in, out *os.File, directory string, values config.Values, status f
 		case "\r", "\n":
 			editing = true
 			input = config.Show(fields[selected].Key, values)
-			message = "enter accept · esc cancel"
+			message = ""
 		}
 	}
 }
@@ -154,28 +157,53 @@ type keyResult struct {
 }
 
 func settingsView(directory string, values config.Values, selected int, message, status string, width int, editing bool, input string) string {
+	if width < 1 {
+		return ""
+	}
 	header := config.Path(directory)
 	if status != "" {
 		header = status
 	}
-	var body strings.Builder
-	fmt.Fprintf(&body, "%s\n%s\n\n", Bold("herdr-review-loop settings"), Clip(header, width))
 	defaults := config.Defaults()
 	fields := config.Fields()
+	labelWidth := 0
+	for _, field := range fields {
+		if size := len([]rune(field.Label)); size > labelWidth {
+			labelWidth = size
+		}
+	}
+	valueWidth := width - labelWidth - 8
+	if valueWidth < 16 {
+		valueWidth = 16
+	}
+	lines := []string{"", "  " + Bold("herdr-review-loop settings") + "   " + Dim(Clip(header, width-4)), ""}
 	for index, field := range fields {
+		label := field.Label + strings.Repeat(" ", labelWidth-len([]rune(field.Label)))
 		marker := " "
 		if index == selected {
-			marker = "›"
+			marker = Bold("▸")
+		} else {
+			label = Dim(label)
 		}
-		shown := Clip(config.Show(field.Key, values), width-22)
-		if config.Show(field.Key, values) == config.Show(field.Key, defaults) {
+		shown := Clip(config.Show(field.Key, values), valueWidth)
+		if index == selected && editing {
+			shown = Clip(input, valueWidth) + Invert(" ")
+		} else if config.Show(field.Key, values) == config.Show(field.Key, defaults) {
+			if shown == "" {
+				shown = "unset"
+			}
 			shown = Dim(shown)
 		}
-		fmt.Fprintf(&body, "%s %-18s %s\n", marker, field.Label, shown)
+		lines = append(lines, fmt.Sprintf("  %s %s  %s", marker, label, shown))
 	}
+	field := fields[selected]
+	keys := settingsKeys
 	if editing {
-		fmt.Fprintf(&body, "\n%s: %s", Bold(fields[selected].Label), Clip(input, width-4))
+		keys = "enter accept · esc cancel"
 	}
-	fmt.Fprintf(&body, "\n%s", Clip(message, width))
-	return body.String()
+	if message == keys {
+		message = ""
+	}
+	lines = append(lines, "", "  "+Dim(Clip(field.Hint, width-4)), "", "  "+Dim(Clip(message, width-4)), "", "  "+Dim(Clip(keys, width-4)))
+	return strings.Join(lines, "\n")
 }

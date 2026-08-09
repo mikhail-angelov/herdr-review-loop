@@ -128,9 +128,7 @@ func usageError() error {
 
 func openPane(ctx context.Context, client herdr.Client, entrypoint, target string, popup bool) error {
 	args := []string{"plugin", "pane", "open", "--plugin", "herdr-review-loop", "--entrypoint", entrypoint}
-	if popup {
-		args = append(args, "--placement", "popup")
-	} else {
+	if !popup {
 		args = append(args, "--placement", "split", "--direction", "right", "--target-pane", target, "--no-focus", "--env", "HERDR_REVIEW_LOOP_AUTHOR="+target)
 	}
 	_, err := client.Call(ctx, args...)

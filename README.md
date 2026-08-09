@@ -5,6 +5,8 @@
 `herdr-review-loop` lets the agent in the current Herdr pane and an agent of a
 different kind in the same workspace review one another in a bounded loop.
 
+<img width="2620" height="1446" alt="image" src="https://github.com/user-attachments/assets/86c3cf1d-c838-4c70-a52d-c9b89aeb3189" />
+
 ## Requirements
 
 Herdr 0.7.5 or newer on macOS or Linux. Installed releases include a matching

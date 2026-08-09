@@ -62,11 +62,11 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 		return err
 	}
 	defer terminal.Close()
-	keys := make(chan byte, 1)
+	keys := make(chan string, 1)
 	go func() {
 		reader := bufio.NewReader(in)
 		for {
-			key, err := reader.ReadByte()
+			key, err := ReadKey(reader, in)
 			if err != nil {
 				return
 			}
@@ -86,13 +86,13 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 		select {
 		case key := <-keys:
 			switch key {
-			case 'q', 3:
+			case "q", "\x03", "esc":
 				return nil
-			case 'r':
+			case "r":
 				message = review()
-			case 'x':
+			case "x":
 				message = stop()
-			case 's':
+			case "s":
 				message = settings()
 			}
 		case <-tick.C:

@@ -68,7 +68,17 @@ func run(args []string) error {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return loop.Run{Client: client, Config: values, Environment: environment, Log: loop.Log{StateDir: environment.StateDir, Output: os.Stdout}}.Execute(ctx, dryRun)
+		log := loop.Log{StateDir: environment.StateDir, Output: os.Stdout}
+		if !dryRun {
+			for _, warning := range warnings {
+				_ = log.Write(warning)
+			}
+		}
+		err := loop.Run{Client: client, Config: values, Environment: environment, Log: log}.Execute(ctx, dryRun)
+		if err != nil && !dryRun {
+			_ = log.Write(err.Error())
+		}
+		return err
 	case "stop":
 		if len(args) != 1 {
 			return errUsage

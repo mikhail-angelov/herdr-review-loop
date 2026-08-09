@@ -64,6 +64,10 @@ func (c Client) Text(ctx context.Context, args ...string) (string, error) {
 		return "", ctx.Err()
 	}
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(strings.TrimSpace(string(exit.Stderr))) > 0 {
+			return "", fmt.Errorf("herdr %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exit.Stderr)))
+		}
 		return "", err
 	}
 	return string(output), nil

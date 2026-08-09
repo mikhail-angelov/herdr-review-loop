@@ -49,20 +49,20 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 		}
 		fmt.Fprintf(&body, "\n%s", Clip(message, width))
 		terminal.Frame(body.String())
-		key, err := reader.ReadByte()
+		key, err := ReadKey(reader, in)
 		if err != nil {
 			return err
 		}
 		switch key {
-		case 'j', 'B':
+		case "j", "down":
 			if selected < len(fields)-1 {
 				selected++
 			}
-		case 'k', 'A':
+		case "k", "up":
 			if selected > 0 {
 				selected--
 			}
-		case 'd':
+		case "d":
 			defaults := config.Defaults()
 			raw := config.Show(fields[selected].Key, defaults)
 			parsed, err := config.Parse(fields[selected].Key, raw)
@@ -71,7 +71,7 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 				message = "restored default"
 				dirty = values != original
 			}
-		case 's':
+		case "s":
 			path, err := config.Save(directory, values)
 			if err != nil {
 				message = err.Error()
@@ -80,14 +80,14 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 				original = values
 				dirty = false
 			}
-		case 'q', 3, 27:
+		case "q", "\x03", "esc":
 			if dirty && !confirmQuit {
 				confirmQuit = true
 				message = "unsaved changes — press q again to discard"
 				continue
 			}
 			return nil
-		case '\r', '\n':
+		case "\r", "\n":
 			terminal.Frame("\x1b[1m" + fields[selected].Label + "\x1b[0m: ")
 			line, err := readRawLine(reader, out)
 			if err != nil {

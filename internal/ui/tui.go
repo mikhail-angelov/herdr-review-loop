@@ -2,10 +2,12 @@
 package ui
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -71,4 +73,52 @@ func Lines(value string, width int) string {
 		result = append(result, line)
 	}
 	return strings.Join(result, "\n")
+}
+
+// ReadKey keeps terminal escape sequences atomic. A lone Escape remains usable
+// after a short timeout, while arrows and bracketed paste markers are never
+// interpreted as their individual bytes.
+func ReadKey(reader *bufio.Reader, input *os.File) (string, error) {
+	first, err := reader.ReadByte()
+	if err != nil {
+		return "", err
+	}
+	if first != 27 {
+		return string(first), nil
+	}
+	_ = input.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
+	second, err := reader.ReadByte()
+	_ = input.SetReadDeadline(time.Time{})
+	if err != nil {
+		if os.IsTimeout(err) {
+			return "esc", nil
+		}
+		return "", err
+	}
+	if second != '[' && second != 'O' {
+		return "esc", nil
+	}
+	var sequence strings.Builder
+	sequence.WriteByte(second)
+	for {
+		next, readErr := reader.ReadByte()
+		if readErr != nil {
+			return "esc", nil
+		}
+		sequence.WriteByte(next)
+		if next >= '@' && next <= '~' {
+			break
+		}
+	}
+	value := sequence.String()
+	if value == "[A" || value == "OA" {
+		return "up", nil
+	}
+	if value == "[B" || value == "OB" {
+		return "down", nil
+	}
+	if value == "[200~" || value == "[201~" {
+		return "paste", nil
+	}
+	return "esc", nil
 }

@@ -32,6 +32,9 @@ type PanelRecord struct {
 
 func panelPath(dir, workspace string) string { return filepath.Join(dir, "panel."+workspace+".json") }
 func ClaimPanel(stateDir, workspace, paneID string) (PanelRecord, bool, error) {
+	if workspace == "" || paneID == "" {
+		return PanelRecord{}, false, fmt.Errorf("panel requires a workspace and pane id")
+	}
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return PanelRecord{}, false, err
 	}

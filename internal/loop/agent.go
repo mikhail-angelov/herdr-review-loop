@@ -83,7 +83,7 @@ func SubmitAndWait(ctx context.Context, client AgentClient, agent herdr.Agent, p
 		if err != nil {
 			return herdr.Agent{}, err
 		}
-		return client.AgentWait(ctx, herdr.Target(agent), budget)
+		return waitAfterPrompt(ctx, client, agent, budget)
 	}
 	for range 3 {
 		if err := client.AgentSendKeys(ctx, herdr.Target(agent), "enter"); err != nil {
@@ -94,10 +94,19 @@ func SubmitAndWait(ctx context.Context, client AgentClient, agent herdr.Agent, p
 			if err != nil {
 				return herdr.Agent{}, err
 			}
-			return client.AgentWait(ctx, herdr.Target(agent), budget)
+			return waitAfterPrompt(ctx, client, agent, budget)
 		}
 	}
 	return herdr.Agent{}, fmt.Errorf("the prompt did not start a turn")
+}
+
+func waitAfterPrompt(ctx context.Context, client AgentClient, agent herdr.Agent, budget time.Duration) (herdr.Agent, error) {
+	result, err := client.AgentWait(ctx, herdr.Target(agent), budget)
+	if err == nil && result.Status == "blocked" {
+		_ = client.AgentFocus(ctx, herdr.Target(result))
+		return result, fmt.Errorf("%s is blocked; answer it, then run the loop again", herdr.Describe(result))
+	}
+	return result, err
 }
 func advanced(ctx context.Context, client AgentClient, agent herdr.Agent, sequence int64, limit time.Duration) bool {
 	timer := time.NewTimer(limit)

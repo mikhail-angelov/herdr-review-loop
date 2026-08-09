@@ -37,11 +37,11 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	if err := r.Log.Write(fmt.Sprintf("author %s; review by %s", herdr.Describe(author), herdr.Describe(reviewer))); err != nil {
-		return err
-	}
 	if dryRun {
 		_, err := fmt.Fprintf(os.Stdout, "author: %s\nreviewer: %s\n", herdr.Describe(author), herdr.Describe(reviewer))
+		return err
+	}
+	if err := r.Log.Write(fmt.Sprintf("author %s; review by %s", herdr.Describe(author), herdr.Describe(reviewer))); err != nil {
 		return err
 	}
 	repository, err := r.Environment.Repository()
@@ -86,11 +86,12 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		if err == nil {
 			_, err = SubmitAndWait(phase, r.Client, reviewer, ReviewPrompt(r.Config.Scope, review.Absolute, iteration, r.Config.MaxIterations))
 		}
-		cancel()
 		if err != nil {
+			cancel()
 			return r.abort(author.WorkspaceID, err)
 		}
-		contents, verdict, err := review.WaitForVerdict(ctx.Done(), askedAt, 15*time.Second)
+		contents, verdict, err := review.WaitForVerdict(phase.Done(), askedAt, 15*time.Second)
+		cancel()
 		if err != nil {
 			return r.abort(author.WorkspaceID, err)
 		}

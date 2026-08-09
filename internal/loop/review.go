@@ -21,6 +21,8 @@ const (
 
 var status = regexp.MustCompile(`(?i)^STATUS:\s*(CLEAN|FINDINGS)$`)
 
+const fileTimestampPrecision = time.Second
+
 func ParseVerdict(contents string) Verdict {
 	for _, line := range strings.Split(contents, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
@@ -95,7 +97,7 @@ func (f *ReviewFile) WrittenSince(askedAt time.Time) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	return contents, !info.ModTime().Before(askedAt), nil
+	return contents, !info.ModTime().Before(askedAt.Truncate(fileTimestampPrecision)), nil
 }
 func (f *ReviewFile) WaitForVerdict(ctx context.Context, askedAt time.Time, timeout time.Duration) (string, Verdict, error) {
 	deadline := time.NewTimer(timeout)

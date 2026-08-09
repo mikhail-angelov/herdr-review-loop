@@ -46,3 +46,27 @@ A byte-at-a-time key reader interprets `й` as the first UTF-8 byte (`Ð`), so n
 ### Ruled-out approaches
 
 - Tried treating every input byte as a standalone key; it broke multi-byte UTF-8 characters.
+
+## 2026-08-09 — Review verdict timestamps must use filesystem precision
+
+### Goal
+
+Accept a verdict file written after the review prompt on filesystems that round modification times to seconds.
+
+### Golden path
+
+1. Capture `askedAt` before submitting the review prompt.
+2. Compare the verdict file's modification time with `askedAt` truncated to `time.Second`.
+3. Keep removing the prior verdict after the reviewer settles and before prompting, so the timestamp check is not the sole stale-file protection.
+
+### Verification
+
+`TestWrittenSinceAllowsRoundedFileTimestamp` creates a verdict with a second-rounded timestamp and accepts it; `go test ./...` and `go vet ./...` pass.
+
+### Failure pattern avoided
+
+Comparing a second-rounded filesystem `mtime` with nanosecond-precision `time.Now()` marks a newly written `review.md` as stale. The loop then waits 15 seconds and fails with `reviewer settled without writing review.md`.
+
+### Ruled-out approaches
+
+- Tried a strict `mtime >= askedAt` comparison; it rejects a verdict whose timestamp is rounded to the same second as the prompt.

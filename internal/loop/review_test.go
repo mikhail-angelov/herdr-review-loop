@@ -64,3 +64,24 @@ func TestWrittenSince(t *testing.T) {
 		t.Fatalf("got %q %v %v", contents, fresh, err)
 	}
 }
+
+func TestWrittenSinceAllowsRoundedFileTimestamp(t *testing.T) {
+	repo := t.TempDir()
+	review, err := OpenReviewFile(repo, "review.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = review.Close() }()
+	path := filepath.Join(repo, "review.md")
+	askedAt := time.Now()
+	if err := os.WriteFile(path, []byte("STATUS: CLEAN"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, askedAt.Truncate(time.Second), askedAt.Truncate(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, fresh, err := review.WrittenSince(askedAt)
+	if err != nil || !fresh {
+		t.Fatalf("got fresh=%v err=%v", fresh, err)
+	}
+}

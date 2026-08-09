@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -88,7 +89,14 @@ func run(args []string) error {
 		if len(args) != 1 {
 			return errUsage
 		}
-		return ui.Settings(os.Stdin, os.Stdout, environment.ConfigDir, values)
+		return ui.Settings(os.Stdin, os.Stdout, environment.ConfigDir, values, func() string {
+			return settingsStatus(environment.StateDir)
+		}, func() string {
+			if err := stopRun(client, environment); err != nil {
+				return err.Error()
+			}
+			return "review loop cancelled"
+		})
 	case "open-panel":
 		if len(args) != 1 {
 			return errUsage
@@ -131,6 +139,44 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		return nil
 	}
 	log := loop.Log{StateDir: environment.StateDir}
+	var pair struct {
+		sync.RWMutex
+		author, reviewer, message string
+	}
+	pair.author = environment.Context.FocusedPaneID
+	refreshPair := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		authorText, reviewerText, message := environment.Context.FocusedPaneID, "", ""
+		agents, err := client.AgentList(ctx)
+		if err != nil {
+			message = "no pair: " + err.Error()
+		} else if author, ok := herdr.Find(agents, environment.Context.FocusedPaneID); ok {
+			authorText = herdr.Describe(author)
+			if reviewer, pickErr := herdr.PickReviewer(values, agents, author, nil); pickErr == nil {
+				reviewerText = herdr.Describe(reviewer)
+			} else {
+				message = "no pair: " + pickErr.Error()
+			}
+		}
+		pair.Lock()
+		pair.author, pair.reviewer, pair.message = authorText, reviewerText, message
+		pair.Unlock()
+	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		for {
+			refreshPair()
+			select {
+			case <-done:
+				return
+			case <-tick.C:
+			}
+		}
+	}()
 	refresh := func() ui.PanelState {
 		tail, _ := log.Tail()
 		held := loop.LiveRun(environment.StateDir)
@@ -138,19 +184,9 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		if !held {
 			state.Phase = loop.LastOutcome(tail)
 		}
-		agents, err := client.AgentList(context.Background())
-		if err != nil {
-			state.Message = "no pair: " + err.Error()
-			return state
-		}
-		if author, ok := herdr.Find(agents, environment.Context.FocusedPaneID); ok {
-			state.Author = herdr.Describe(author)
-			if reviewer, err := herdr.PickReviewer(values, agents, author, nil); err == nil {
-				state.Reviewer = herdr.Describe(reviewer)
-			} else {
-				state.Message = "no pair: " + err.Error()
-			}
-		}
+		pair.RLock()
+		state.Author, state.Reviewer, state.Message = pair.author, pair.reviewer, pair.message
+		pair.RUnlock()
 		return state
 	}
 	return ui.Panel(os.Stdin, os.Stdout, refresh, func() string {
@@ -180,6 +216,14 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		}
 		return "opened settings"
 	})
+}
+
+func settingsStatus(stateDir string) string {
+	record, err := loop.Holder(stateDir)
+	if err != nil || !loop.StillTheHolder(record) {
+		return ""
+	}
+	return fmt.Sprintf("review loop running (pid %d, since %s)", record.PID, record.Started.Local().Format("15:04"))
 }
 
 func stopRun(client herdr.Client, environment herdr.Environment) error {

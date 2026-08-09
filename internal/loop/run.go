@@ -28,6 +28,8 @@ type Run struct {
 	Log         Log
 }
 
+const cleanupTimeout = 2 * time.Second
+
 func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	agents, err := r.Client.AgentList(ctx)
 	if err != nil {
@@ -65,8 +67,23 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = lock.Release() }()
-	defer func() { _ = r.Client.WorkspaceReportMetadata(context.Background(), author.WorkspaceID, "", true) }()
+	var notificationTitle, notificationMessage string
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+		_ = r.Client.WorkspaceReportMetadata(cleanup, author.WorkspaceID, "", true)
+		cancel()
+		_ = lock.Release()
+		if notificationTitle != "" {
+			notify, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+			defer cancel()
+			_ = r.Client.NotificationShow(notify, notificationTitle, notificationMessage)
+		}
+	}()
+	abort := func(err error) error {
+		notificationTitle = "Review loop stopped"
+		notificationMessage = r.abortMessage(err)
+		return err
+	}
 	if _, live := LivePanel(r.Environment.StateDir, author.WorkspaceID); live {
 		_ = r.Log.Write("using existing panel")
 	} else if pane, openErr := r.Client.PluginPaneOpen(ctx, author.PaneID, author.PaneID); openErr != nil {
@@ -101,7 +118,7 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		}
 		_ = r.Log.Write(fmt.Sprintf("--- iteration %d/%d: review", iteration, r.Config.MaxIterations))
 		if err := r.Client.AgentFocus(ctx, herdr.Target(reviewer)); err != nil {
-			return r.abort(author.WorkspaceID, err)
+			return abort(err)
 		}
 		phase, cancel := context.WithTimeout(ctx, r.Config.ReviewTimeout)
 		_, err = Settle(phase, r.Client, reviewer)
@@ -123,20 +140,21 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		}
 		if err != nil {
 			cancel()
-			return r.abort(author.WorkspaceID, err)
+			return abort(err)
 		}
 		contents, verdict, err := review.WaitForVerdict(phase, askedAt, 15*time.Second)
 		cancel()
 		if err != nil {
-			return r.abort(author.WorkspaceID, err)
+			return abort(err)
 		}
 		if err = r.Log.Archive(runID, iteration, contents); err != nil {
-			return r.abort(author.WorkspaceID, err)
+			return abort(err)
 		}
 		if verdict == Clean {
 			_ = r.Client.AgentFocus(ctx, herdr.Target(author))
 			_ = r.Log.Write(fmt.Sprintf("clean after %d iteration(s)", iteration))
-			_ = r.Client.NotificationShow(ctx, "Review loop clean", fmt.Sprintf("clean after %d iteration(s)", iteration))
+			notificationTitle = "Review loop clean"
+			notificationMessage = fmt.Sprintf("clean after %d iteration(s)", iteration)
 			return nil
 		}
 		_ = r.Log.Write(fmt.Sprintf("findings reported (%d lines)", len(splitLines(contents))))
@@ -148,7 +166,7 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		}
 		_ = r.Log.Write(fmt.Sprintf("--- iteration %d/%d: apply", iteration, r.Config.MaxIterations))
 		if err := r.Client.AgentFocus(ctx, herdr.Target(author)); err != nil {
-			return r.abort(author.WorkspaceID, err)
+			return abort(err)
 		}
 		phase, cancel = context.WithTimeout(ctx, r.Config.FixTimeout)
 		_, err = Settle(phase, r.Client, author)
@@ -157,22 +175,22 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 		}
 		cancel()
 		if err != nil {
-			return r.abort(author.WorkspaceID, err)
+			return abort(err)
 		}
 	}
 	err = fmt.Errorf("stopped after max iterations with findings still open")
 	_ = r.Log.Write(err.Error())
-	_ = r.Client.NotificationShow(ctx, "Review loop stopped", err.Error())
+	notificationTitle = "Review loop stopped"
+	notificationMessage = err.Error()
 	return err
 }
-func (r Run) abort(workspace string, err error) error {
+func (r Run) abortMessage(err error) string {
 	message := err.Error()
 	if errors.Is(err, context.Canceled) {
 		message = "cancelled"
 	}
 	_ = r.Log.Write(message)
-	_ = r.Client.NotificationShow(context.Background(), "Review loop stopped", message)
-	return err
+	return message
 }
 func splitLines(contents string) []string {
 	if contents == "" {

@@ -19,7 +19,7 @@ func DumpSettings(out *os.File, directory string, values config.Values) {
 	}
 }
 
-func Settings(in, out *os.File, directory string, values config.Values) error {
+func Settings(in, out *os.File, directory string, values config.Values, status func() string, stop func() string) error {
 	if !IsTTY(in) || !IsTTY(out) {
 		DumpSettings(out, directory, values)
 		return nil
@@ -34,21 +34,15 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 	dirty := false
 	confirmQuit := false
 	selected := 0
-	message := "j/k move · enter edit · d default · s save · q close"
+	message := "j/k move · enter edit · d default · s save · x cancel run · q close"
 	reader := bufio.NewReader(in)
 	for {
 		width, _ := terminal.Size()
-		var body strings.Builder
-		fmt.Fprintf(&body, "\x1b[1mherdr-review-loop settings\x1b[0m\n%s\n\n", Clip(config.Path(directory), width))
-		for index, field := range fields {
-			marker := " "
-			if index == selected {
-				marker = "›"
-			}
-			fmt.Fprintf(&body, "%s %-18s %s\n", marker, field.Label, Clip(config.Show(field.Key, values), width-22))
+		currentStatus := ""
+		if status != nil {
+			currentStatus = status()
 		}
-		fmt.Fprintf(&body, "\n%s", Clip(message, width))
-		terminal.Frame(body.String())
+		terminal.Frame(settingsView(directory, values, selected, message, currentStatus, width))
 		key, err := ReadKey(reader, in)
 		if err != nil {
 			return err
@@ -80,6 +74,12 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 				original = values
 				dirty = false
 			}
+		case "x":
+			if stop == nil {
+				message = "cancellation is unavailable"
+			} else {
+				message = stop()
+			}
 		case "q", "\x03", "esc":
 			if dirty && !confirmQuit {
 				confirmQuit = true
@@ -107,6 +107,29 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 			}
 		}
 	}
+}
+
+func settingsView(directory string, values config.Values, selected int, message, status string, width int) string {
+	header := config.Path(directory)
+	if status != "" {
+		header = status
+	}
+	var body strings.Builder
+	fmt.Fprintf(&body, "\x1b[1mherdr-review-loop settings\x1b[0m\n%s\n\n", Clip(header, width))
+	defaults := config.Defaults()
+	for index, field := range config.Fields() {
+		marker := " "
+		if index == selected {
+			marker = "›"
+		}
+		shown := Clip(config.Show(field.Key, values), width-22)
+		if config.Show(field.Key, values) == config.Show(field.Key, defaults) {
+			shown = "\x1b[2m" + shown + "\x1b[0m"
+		}
+		fmt.Fprintf(&body, "%s %-18s %s\n", marker, field.Label, shown)
+	}
+	fmt.Fprintf(&body, "\n%s", Clip(message, width))
+	return body.String()
 }
 
 func readRawLine(reader *bufio.Reader, out *os.File) (string, error) {

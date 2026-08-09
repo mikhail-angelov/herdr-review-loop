@@ -37,7 +37,11 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	if !ok {
 		return fmt.Errorf("run this from your agent's pane")
 	}
-	reviewer, err := herdr.PickReviewer(r.Config, agents, author, func(message string) { _ = r.Log.Write(message) })
+	var note func(string)
+	if !dryRun {
+		note = func(message string) { _ = r.Log.Write(message) }
+	}
+	reviewer, err := herdr.PickReviewer(r.Config, agents, author, note)
 	if err != nil {
 		return err
 	}

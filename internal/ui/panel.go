@@ -21,7 +21,7 @@ func PanelView(state PanelState, width, rows int) string {
 	if state.Running {
 		status = "● running"
 	}
-	header := []string{Clip("\x1b[1mherdr-review-loop  "+status+"\x1b[0m", width), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
+	header := []string{"\x1b[1m" + Clip("herdr-review-loop  "+status, width) + "\x1b[0m", Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
 	footer := append([]string{""}, strings.Split(Lines("r review · x stop · s settings · q close", width), "\n")...)
 	tail := []string{}
 	for _, line := range strings.Split(state.Tail, "\n") {

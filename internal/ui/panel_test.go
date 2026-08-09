@@ -10,4 +10,7 @@ func TestPanelViewClipsAndKeepsHints(t *testing.T) {
 	if !strings.Contains(view, "r review") || !strings.Contains(view, "q close") {
 		t.Fatalf("unexpected view %q", view)
 	}
+	if !strings.Contains(view, "\x1b[0m") {
+		t.Fatalf("header reset missing: %q", view)
+	}
 }

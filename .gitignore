@@ -3,6 +3,7 @@ docs/reference
 bin/herdr-review-loop
 dist/
 run.lock
+run.lock.json
 herdr-review-loop.log
 history/
 panel.*.json

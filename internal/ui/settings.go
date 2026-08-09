@@ -30,6 +30,9 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 	}
 	defer terminal.Close()
 	fields := config.Fields()
+	original := values
+	dirty := false
+	confirmQuit := false
 	selected := 0
 	message := "j/k move · enter edit · d default · s save · q close"
 	reader := bufio.NewReader(in)
@@ -66,6 +69,7 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 			if err == nil {
 				_ = config.Apply(&values, fields[selected].Key, parsed)
 				message = "restored default"
+				dirty = values != original
 			}
 		case 's':
 			path, err := config.Save(directory, values)
@@ -73,8 +77,15 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 				message = err.Error()
 			} else {
 				message = "saved " + path
+				original = values
+				dirty = false
 			}
-		case 'q', 3:
+		case 'q', 3, 27:
+			if dirty && !confirmQuit {
+				confirmQuit = true
+				message = "unsaved changes — press q again to discard"
+				continue
+			}
 			return nil
 		case '\r', '\n':
 			terminal.Frame("\x1b[1m" + fields[selected].Label + "\x1b[0m: ")
@@ -92,6 +103,7 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 			} else {
 				_ = config.Apply(&values, fields[selected].Key, parsed)
 				message = "updated"
+				dirty = values != original
 			}
 		}
 	}

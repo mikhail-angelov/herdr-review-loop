@@ -34,7 +34,11 @@ func (t *Terminal) Close() {
 	_, _ = fmt.Fprint(t.Out, "\x1b[?25h\x1b[0m\n")
 }
 func (t *Terminal) Size() int {
-	width, _, err := term.GetSize(int(t.Out.(*os.File).Fd()))
+	file, ok := t.Out.(*os.File)
+	if !ok {
+		return 80
+	}
+	width, _, err := term.GetSize(int(file.Fd()))
 	if err != nil || width < 1 {
 		return 80
 	}
@@ -55,6 +59,9 @@ func Clip(value string, width int) string {
 	return string(runes[:width-1]) + "…"
 }
 func Lines(value string, width int) string {
+	if width < 1 {
+		return value
+	}
 	var result []string
 	for _, line := range strings.Split(value, "\n") {
 		for len([]rune(line)) > width {

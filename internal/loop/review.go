@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -96,7 +97,7 @@ func (f *ReviewFile) WrittenSince(askedAt time.Time) (string, bool, error) {
 	}
 	return contents, !info.ModTime().Before(askedAt), nil
 }
-func (f *ReviewFile) WaitForVerdict(ctxDone <-chan struct{}, askedAt time.Time, timeout time.Duration) (string, Verdict, error) {
+func (f *ReviewFile) WaitForVerdict(ctx context.Context, askedAt time.Time, timeout time.Duration) (string, Verdict, error) {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(500 * time.Millisecond)
@@ -110,8 +111,8 @@ func (f *ReviewFile) WaitForVerdict(ctxDone <-chan struct{}, askedAt time.Time, 
 			return contents, ParseVerdict(contents), nil
 		}
 		select {
-		case <-ctxDone:
-			return "", Findings, fmt.Errorf("review phase cancelled")
+		case <-ctx.Done():
+			return "", Findings, fmt.Errorf("review phase ended: %w", ctx.Err())
 		case <-deadline.C:
 			return "", Findings, fmt.Errorf("reviewer settled without writing %s", f.Relative)
 		case <-tick.C:

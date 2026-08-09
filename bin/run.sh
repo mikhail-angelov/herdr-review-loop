@@ -4,8 +4,9 @@ set -euo pipefail
 if [[ -n "${HERDR_REVIEW_LOOP_BIN:-}" ]]; then
   exec "$HERDR_REVIEW_LOOP_BIN" "$@"
 fi
-if [[ -x "bin/herdr-review-loop" ]]; then
-  exec "bin/herdr-review-loop" "$@"
+root=$(cd "$(dirname "$0")/.." && pwd)
+if [[ -x "$root/bin/herdr-review-loop" ]]; then
+	exec "$root/bin/herdr-review-loop" "$@"
 fi
 if command -v herdr-review-loop >/dev/null 2>&1; then
   exec herdr-review-loop "$@"

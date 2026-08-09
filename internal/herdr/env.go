@@ -35,6 +35,9 @@ func LoadEnvironment() (Environment, error) {
 	if err := json.Unmarshal([]byte(raw), &env.Context); err != nil {
 		return Environment{}, fmt.Errorf("invalid HERDR_PLUGIN_CONTEXT_JSON: %w", err)
 	}
+	if author := os.Getenv("HERDR_REVIEW_LOOP_AUTHOR"); author != "" {
+		env.Context.FocusedPaneID = author
+	}
 	return env, nil
 }
 

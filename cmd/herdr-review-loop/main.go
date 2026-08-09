@@ -105,7 +105,7 @@ func openPane(ctx context.Context, client herdr.Client, entrypoint, target strin
 	if popup {
 		args = append(args, "--placement", "popup")
 	} else {
-		args = append(args, "--placement", "split", "--direction", "right", "--target-pane", target, "--no-focus")
+		args = append(args, "--placement", "split", "--direction", "right", "--target-pane", target, "--no-focus", "--env", "HERDR_REVIEW_LOOP_AUTHOR="+target)
 	}
 	_, err := client.Call(ctx, args...)
 	return err
@@ -144,6 +144,7 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		command.Stdout = nil
 		command.Stderr = nil
 		command.Env = os.Environ()
+		command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err := command.Start(); err != nil {
 			return err.Error()
 		}
@@ -193,9 +194,14 @@ func stopRun(client herdr.Client, environment herdr.Environment) error {
 		time.Sleep(time.Second)
 	}
 	_ = client.WorkspaceReportMetadata(context.Background(), record.Workspace, "", true)
+	log := loop.Log{StateDir: environment.StateDir, Output: os.Stdout}
 	if loop.StillTheHolder(record) {
+		_ = log.Write("review loop process survived cancellation")
+		_ = client.NotificationShow(context.Background(), "Review loop stopped", "review loop process survived cancellation")
 		return fmt.Errorf("review loop process survived cancellation")
 	}
+	_ = log.Write("cancelled")
+	_ = client.NotificationShow(context.Background(), "Review loop cancelled", "review loop cancelled")
 	fmt.Println("review loop cancelled")
 	return nil
 }

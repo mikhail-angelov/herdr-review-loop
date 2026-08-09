@@ -18,20 +18,19 @@ func PanelView(state PanelState, width int) string {
 	if state.Running {
 		status = "● running"
 	}
-	lines := []string{"\x1b[1mherdr-review-loop  " + status + "\x1b[0m", "author   " + state.Author, "review by " + state.Reviewer, state.Phase, strings.Repeat("─", max(1, width)), Lines(state.Tail, width), "", Lines("r review · x stop · s settings · q close", width)}
+	if width < 1 {
+		return ""
+	}
+	lines := []string{"\x1b[1mherdr-review-loop  " + status + "\x1b[0m", "author   " + state.Author, "review by " + state.Reviewer, state.Phase, strings.Repeat("─", width)}
+	for _, line := range strings.Split(Lines(state.Tail, width), "\n") {
+		lines = append(lines, Clip(line, width))
+	}
+	lines = append(lines, "")
+	lines = append(lines, strings.Split(Lines("r review · x stop · s settings · q close", width), "\n")...)
 	if state.Message != "" {
 		lines = append(lines, Clip(state.Message, width))
 	}
-	for i, line := range lines {
-		lines[i] = Clip(line, width)
-	}
 	return strings.Join(lines, "\n")
-}
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // Panel keeps no mutable loop state: each refresh gets its display state from files

@@ -60,14 +60,14 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	}
 	defer func() { _ = lock.Release() }()
 	defer func() { _ = r.Client.WorkspaceReportMetadata(context.Background(), author.WorkspaceID, "", true) }()
-	runID := time.Now().UTC().Format("2006-01-02T15-04-05-000000000Z07-00")
+	runID := strings.NewReplacer(":", "-", ".", "-").Replace(time.Now().UTC().Format(time.RFC3339Nano))
 	for iteration := 1; iteration <= r.Config.MaxIterations; iteration++ {
 		if err := r.Client.WorkspaceReportMetadata(ctx, author.WorkspaceID, fmt.Sprintf("review %d/%d", iteration, r.Config.MaxIterations), false); err != nil {
 			_ = r.Log.Write("progress update failed: " + err.Error())
 		}
 		_ = r.Log.Write(fmt.Sprintf("--- iteration %d/%d: review", iteration, r.Config.MaxIterations))
 		if err := r.Client.AgentFocus(ctx, herdr.Target(reviewer)); err != nil {
-			return err
+			return r.abort(author.WorkspaceID, err)
 		}
 		phase, cancel := context.WithTimeout(ctx, r.Config.ReviewTimeout)
 		_, err = Settle(phase, r.Client, reviewer)
@@ -91,7 +91,7 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 			cancel()
 			return r.abort(author.WorkspaceID, err)
 		}
-		contents, verdict, err := review.WaitForVerdict(phase.Done(), askedAt, 15*time.Second)
+		contents, verdict, err := review.WaitForVerdict(phase, askedAt, 15*time.Second)
 		cancel()
 		if err != nil {
 			return r.abort(author.WorkspaceID, err)

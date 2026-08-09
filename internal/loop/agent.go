@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -75,7 +76,8 @@ func SubmitAndWait(ctx context.Context, client AgentClient, agent herdr.Agent, p
 		}
 		return result, nil
 	}
-	if coded, ok := err.(*herdr.Error); !ok || coded.Code != "agent_prompt_stalled" {
+	var coded *herdr.Error
+	if !errors.As(err, &coded) || coded.Code != "agent_prompt_stalled" {
 		return herdr.Agent{}, err
 	}
 	if advanced(ctx, client, agent, before.StateChangeSeq, 5*time.Second) {

@@ -75,7 +75,7 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 			return nil
 		case '\r', '\n':
 			terminal.Frame("\x1b[1m" + fields[selected].Label + "\x1b[0m: ")
-			line, err := reader.ReadString('\n')
+			line, err := readRawLine(reader, out)
 			if err != nil {
 				return err
 			}
@@ -86,6 +86,31 @@ func Settings(in, out *os.File, directory string, values config.Values) error {
 				_ = config.Apply(&values, fields[selected].Key, parsed)
 				message = "updated"
 			}
+		}
+	}
+}
+
+func readRawLine(reader *bufio.Reader, out *os.File) (string, error) {
+	var line strings.Builder
+	for {
+		key, err := reader.ReadByte()
+		if err != nil {
+			return "", err
+		}
+		switch key {
+		case '\r', '\n':
+			_, _ = fmt.Fprint(out, "\r\n")
+			return line.String(), nil
+		case 127, 8:
+			runes := []rune(line.String())
+			if len(runes) > 0 {
+				line.Reset()
+				line.WriteString(string(runes[:len(runes)-1]))
+				_, _ = fmt.Fprint(out, "\b \b")
+			}
+		default:
+			line.WriteByte(key)
+			_, _ = fmt.Fprintf(out, "%c", key)
 		}
 	}
 }

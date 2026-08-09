@@ -3,6 +3,7 @@ package herdr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -27,7 +28,8 @@ func (c Client) Call(ctx context.Context, args ...string) (json.RawMessage, erro
 		return nil, ctx.Err()
 	}
 	var stderr string
-	if exit, ok := err.(*exec.ExitError); ok {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
 		stderr = string(exit.Stderr)
 	}
 	body := stdout

@@ -209,9 +209,9 @@ func Show(key string, values Values) string {
 	case "review_file":
 		return values.ReviewFile
 	case "review_timeout":
-		return values.ReviewTimeout.String()
+		return showDuration(values.ReviewTimeout)
 	case "fix_timeout":
-		return values.FixTimeout.String()
+		return showDuration(values.FixTimeout)
 	case "reset_command":
 		return values.ResetCommand
 	case "scope":
@@ -219,6 +219,12 @@ func Show(key string, values Values) string {
 	default:
 		return ""
 	}
+}
+
+func showDuration(value time.Duration) string {
+	text := value.String()
+	text = strings.TrimSuffix(text, "0s")
+	return strings.TrimSuffix(text, "0m")
 }
 
 func setJSON(values *Values, key string, value any) error {

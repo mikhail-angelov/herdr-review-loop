@@ -68,7 +68,9 @@ func Phase(log string) string {
 	return phase
 }
 func LastOutcome(log string) string {
-	for _, line := range strings.Split(strings.TrimSpace(log), "\n") {
+	lines := strings.Split(strings.TrimSpace(log), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := lines[index]
 		if strings.Contains(line, "clean after") || strings.Contains(line, "stopped after") || strings.Contains(line, "cancelled") {
 			return line
 		}

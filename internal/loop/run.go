@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -131,8 +132,12 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	return err
 }
 func (r Run) abort(workspace string, err error) error {
-	_ = r.Log.Write(err.Error())
-	_ = r.Client.NotificationShow(context.Background(), "Review loop stopped", err.Error())
+	message := err.Error()
+	if errors.Is(err, context.Canceled) {
+		message = "cancelled"
+	}
+	_ = r.Log.Write(message)
+	_ = r.Client.NotificationShow(context.Background(), "Review loop stopped", message)
 	return err
 }
 func splitLines(contents string) []string {

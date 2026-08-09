@@ -77,6 +77,47 @@ func Holder(stateDir string) (LockRecord, error) {
 	}
 	return record, nil
 }
+
+// WaitHolder distinguishes an unlocked state from the short interval where a holder
+// has acquired flock but has not atomically published its record yet.
+func WaitHolder(stateDir string, timeout time.Duration) (LockRecord, bool, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		record, err := Holder(stateDir)
+		if err == nil {
+			return record, true, nil
+		}
+		held, lockErr := IsHeld(stateDir)
+		if lockErr != nil {
+			return LockRecord{}, false, lockErr
+		}
+		if !held {
+			return LockRecord{}, false, nil
+		}
+		if time.Now().After(deadline) {
+			return LockRecord{}, true, fmt.Errorf("a review loop is starting or its record is unreadable — try again")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func IsHeld(stateDir string) (bool, error) {
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return false, err
+	}
+	file, err := os.OpenFile(lockPath(stateDir), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = file.Close() }()
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		if err == unix.EWOULDBLOCK || err == unix.EAGAIN {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, unix.Flock(int(file.Fd()), unix.LOCK_UN)
+}
 func StillTheHolder(record LockRecord) bool {
 	started, err := processStart(record.PID)
 	return err == nil && started == record.ProcessStarted

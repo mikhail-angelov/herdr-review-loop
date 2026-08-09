@@ -172,6 +172,32 @@ func Parse(key, text string) (any, error) {
 	}
 }
 
+// Apply updates one parsed setting. Keeping this next to Parse ensures the pane and
+// the file loader share one representation of every setting.
+func Apply(values *Values, key string, value any) error {
+	switch key {
+	case "reviewer_kind":
+		values.ReviewerKind = value.(string)
+	case "reviewer_name":
+		values.ReviewerName = value.(string)
+	case "max_iterations":
+		values.MaxIterations = value.(int)
+	case "review_file":
+		values.ReviewFile = value.(string)
+	case "review_timeout":
+		values.ReviewTimeout = value.(time.Duration)
+	case "fix_timeout":
+		values.FixTimeout = value.(time.Duration)
+	case "reset_command":
+		values.ResetCommand = value.(string)
+	case "scope":
+		values.Scope = value.(string)
+	default:
+		return fmt.Errorf("unknown setting")
+	}
+	return nil
+}
+
 func Show(key string, values Values) string {
 	switch key {
 	case "reviewer_kind":

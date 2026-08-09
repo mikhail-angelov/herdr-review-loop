@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
 	"github.com/mikhail-angelov/herdr-review-loop/internal/herdr"
 	"github.com/mikhail-angelov/herdr-review-loop/internal/loop"
+	"github.com/mikhail-angelov/herdr-review-loop/internal/ui"
 )
 
 var version = "0.1.0"
@@ -76,7 +78,7 @@ func run(args []string) error {
 		if len(args) != 1 {
 			return errUsage
 		}
-		return printSettings(environment.ConfigDir, values)
+		return ui.Settings(os.Stdin, os.Stdout, environment.ConfigDir, values)
 	case "open-panel":
 		if len(args) != 1 {
 			return errUsage
@@ -91,20 +93,13 @@ func run(args []string) error {
 		if len(args) != 1 {
 			return errUsage
 		}
-		return panel(environment.StateDir)
+		return panel(environment, values, client)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return errUsage
 	}
 }
 
-func printSettings(directory string, values config.Values) error {
-	fmt.Println(config.Path(directory))
-	for _, field := range config.Fields() {
-		fmt.Printf("%s: %s\n", field.Label, config.Show(field.Key, values))
-	}
-	return nil
-}
 func openPane(ctx context.Context, client herdr.Client, entrypoint, target string, popup bool) error {
 	args := []string{"plugin", "pane", "open", "--plugin", "herdr-review-loop", "--entrypoint", entrypoint}
 	if popup {
@@ -115,27 +110,65 @@ func openPane(ctx context.Context, client herdr.Client, entrypoint, target strin
 	_, err := client.Call(ctx, args...)
 	return err
 }
-func panel(stateDir string) error {
-	log := loop.Log{StateDir: stateDir}
-	tail, err := log.Tail()
-	if err != nil {
-		return err
+func panel(environment herdr.Environment, values config.Values, client herdr.Client) error {
+	log := loop.Log{StateDir: environment.StateDir}
+	refresh := func() ui.PanelState {
+		tail, _ := log.Tail()
+		held, _ := loop.IsHeld(environment.StateDir)
+		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: loop.Phase(tail), Tail: tail, Running: held}
+		if state.Phase == "" {
+			state.Phase = loop.LastOutcome(tail)
+		}
+		agents, err := client.AgentList(context.Background())
+		if err != nil {
+			state.Message = "no pair: " + err.Error()
+			return state
+		}
+		if author, ok := herdr.Find(agents, environment.Context.FocusedPaneID); ok {
+			state.Author = herdr.Describe(author)
+			if reviewer, err := herdr.PickReviewer(values, agents, author, nil); err == nil {
+				state.Reviewer = herdr.Describe(reviewer)
+			} else {
+				state.Message = "no pair: " + err.Error()
+			}
+		}
+		return state
 	}
-	if tail == "" {
-		tail = "idle"
-	}
-	fmt.Print(tail)
-	return nil
+	return ui.Panel(os.Stdin, os.Stdout, refresh, func() string {
+		executable, err := os.Executable()
+		if err != nil {
+			return err.Error()
+		}
+		command := exec.Command(executable, "review")
+		command.Stdin = nil
+		command.Stdout = nil
+		command.Stderr = nil
+		command.Env = os.Environ()
+		if err := command.Start(); err != nil {
+			return err.Error()
+		}
+		return "review started"
+	}, func() string {
+		if err := stopRun(client, environment); err != nil {
+			return err.Error()
+		}
+		return "review loop cancelled"
+	}, func() string {
+		if err := openPane(context.Background(), client, "settings", environment.Context.FocusedPaneID, true); err != nil {
+			return err.Error()
+		}
+		return "opened settings"
+	})
 }
 
 func stopRun(client herdr.Client, environment herdr.Environment) error {
-	record, err := loop.Holder(environment.StateDir)
-	if os.IsNotExist(err) {
+	record, held, err := loop.WaitHolder(environment.StateDir, time.Second)
+	if err != nil {
+		return err
+	}
+	if !held {
 		fmt.Println("no review loop is running")
 		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("a review loop is starting or its record is unreadable — try again")
 	}
 	if !loop.StillTheHolder(record) {
 		fmt.Println("no review loop is running")

@@ -54,3 +54,26 @@ func TestParse(t *testing.T) {
 		t.Fatal("accepted blank scope")
 	}
 }
+
+func TestParseAcceptsEveryFieldAndRejectsInvalidValues(t *testing.T) {
+	valid := map[string]string{
+		"reviewer_kind":  "claude",
+		"reviewer_name":  "pane-1",
+		"max_iterations": "2",
+		"review_file":    "reviews/review.md",
+		"review_timeout": "90s",
+		"fix_timeout":    "1m",
+		"reset_command":  "/new",
+		"scope":          "the working tree",
+	}
+	for _, field := range Fields() {
+		if _, err := Parse(field.Key, valid[field.Key]); err != nil {
+			t.Errorf("%s: rejected valid value: %v", field.Key, err)
+		}
+	}
+	for _, key := range []string{"max_iterations", "review_file", "review_timeout", "fix_timeout", "scope"} {
+		if _, err := Parse(key, ""); err == nil {
+			t.Errorf("%s: accepted empty invalid value", key)
+		}
+	}
+}

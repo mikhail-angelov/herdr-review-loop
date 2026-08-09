@@ -3,6 +3,7 @@ package ui
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,33 @@ type Terminal struct {
 	In    *os.File
 	Out   io.Writer
 	state *term.State
+}
+
+type KeyReader struct {
+	bytes   chan byteResult
+	pending []string
+}
+
+type byteResult struct {
+	value byte
+	err   error
+}
+
+var errKeyTimeout = errors.New("key read timeout")
+
+func NewKeyReader(reader *bufio.Reader, input *os.File) *KeyReader {
+	bytes := make(chan byteResult, 1)
+	go func() {
+		for {
+			value, err := reader.ReadByte()
+			bytes <- byteResult{value: value, err: err}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	_ = input
+	return &KeyReader{bytes: bytes}
 }
 
 func (t *Terminal) Open() error {
@@ -75,42 +103,50 @@ func Lines(value string, width int) string {
 	return strings.Join(result, "\n")
 }
 
-// ReadKey keeps terminal escape sequences atomic. A lone Escape remains usable
-// after a short timeout, while arrows and bracketed paste markers are never
-// interpreted as their individual bytes.
-func ReadKey(reader *bufio.Reader, input *os.File) (string, error) {
-	first, err := reader.ReadByte()
+// ReadKey keeps terminal escape sequences atomic. An unfinished sequence is
+// delivered as its literal bytes after 40 ms, so a malformed or interrupted
+// sequence can neither freeze a pane nor turn into a close command.
+func (r *KeyReader) ReadKey() (string, error) {
+	if len(r.pending) > 0 {
+		key := r.pending[0]
+		r.pending = r.pending[1:]
+		return key, nil
+	}
+	first, err := r.readByte()
 	if err != nil {
 		return "", err
 	}
 	if first != 27 {
 		return string(first), nil
 	}
-	_ = input.SetReadDeadline(time.Now().Add(40 * time.Millisecond))
-	second, err := reader.ReadByte()
-	_ = input.SetReadDeadline(time.Time{})
+	sequence := []byte{first}
+	second, err := r.readByteAfter(40 * time.Millisecond)
 	if err != nil {
-		if os.IsTimeout(err) {
+		if errors.Is(err, errKeyTimeout) {
 			return "esc", nil
 		}
 		return "", err
 	}
+	sequence = append(sequence, second)
 	if second != '[' && second != 'O' {
+		r.enqueueLiteral(sequence[1:])
 		return "esc", nil
 	}
-	var sequence strings.Builder
-	sequence.WriteByte(second)
 	for {
-		next, readErr := reader.ReadByte()
+		next, readErr := r.readByteAfter(40 * time.Millisecond)
 		if readErr != nil {
-			return "esc", nil
+			if errors.Is(readErr, errKeyTimeout) || errors.Is(readErr, io.EOF) {
+				r.enqueueLiteral(sequence)
+				return r.ReadKey()
+			}
+			return "", readErr
 		}
-		sequence.WriteByte(next)
+		sequence = append(sequence, next)
 		if next >= '@' && next <= '~' {
 			break
 		}
 	}
-	value := sequence.String()
+	value := string(sequence[1:])
 	if value == "[A" || value == "OA" {
 		return "up", nil
 	}
@@ -120,5 +156,27 @@ func ReadKey(reader *bufio.Reader, input *os.File) (string, error) {
 	if value == "[200~" || value == "[201~" {
 		return "paste", nil
 	}
-	return "esc", nil
+	return string(sequence), nil
+}
+
+func (r *KeyReader) readByteAfter(timeout time.Duration) (byte, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-r.bytes:
+		return result.value, result.err
+	case <-timer.C:
+		return 0, errKeyTimeout
+	}
+}
+
+func (r *KeyReader) readByte() (byte, error) {
+	result := <-r.bytes
+	return result.value, result.err
+}
+
+func (r *KeyReader) enqueueLiteral(bytes []byte) {
+	for _, value := range bytes {
+		r.pending = append(r.pending, string(value))
+	}
 }

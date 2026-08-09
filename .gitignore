@@ -1,5 +1,4 @@
 .claude
-docs/reference
 bin/herdr-review-loop
 dist/
 run.lock

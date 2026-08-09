@@ -32,20 +32,20 @@ func (c Client) Call(ctx context.Context, args ...string) (json.RawMessage, erro
 	if errors.As(err, &exit) {
 		stderr = string(exit.Stderr)
 	}
-	body := stdout
-	if len(strings.TrimSpace(string(body))) == 0 {
-		body = []byte(stderr)
-	}
-	var envelope struct {
-		Result json.RawMessage `json:"result"`
-		Error  *Error          `json:"error"`
-	}
-	if json.Unmarshal(body, &envelope) == nil {
-		if envelope.Error != nil {
-			return nil, envelope.Error
+	if result, envelopeErr, ok := envelope(stdout); ok {
+		if envelopeErr != nil {
+			return nil, envelopeErr
 		}
 		if err == nil {
-			return envelope.Result, nil
+			return result, nil
+		}
+	}
+	if result, envelopeErr, ok := envelope([]byte(stderr)); ok {
+		if envelopeErr != nil {
+			return nil, envelopeErr
+		}
+		if err == nil {
+			return result, nil
 		}
 	}
 	if err != nil {
@@ -55,6 +55,20 @@ func (c Client) Call(ctx context.Context, args ...string) (json.RawMessage, erro
 		return nil, fmt.Errorf("herdr %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr))
 	}
 	return nil, fmt.Errorf("herdr %s returned invalid JSON", strings.Join(args, " "))
+}
+
+func envelope(body []byte) (json.RawMessage, *Error, bool) {
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil, nil, false
+	}
+	var value struct {
+		Result json.RawMessage `json:"result"`
+		Error  *Error          `json:"error"`
+	}
+	if json.Unmarshal(body, &value) != nil {
+		return nil, nil, false
+	}
+	return value.Result, value.Error, true
 }
 
 func (c Client) Text(ctx context.Context, args ...string) (string, error) {

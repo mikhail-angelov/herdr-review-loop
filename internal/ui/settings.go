@@ -2,15 +2,14 @@ package ui
 
 import (
 	"bufio"
-	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
 )
-
-var errEditCancelled = errors.New("edit cancelled")
 
 func DumpSettings(out *os.File, directory string, values config.Values) {
 	_, _ = fmt.Fprintln(out, config.Path(directory))
@@ -35,17 +34,71 @@ func Settings(in, out *os.File, directory string, values config.Values, status f
 	confirmQuit := false
 	selected := 0
 	message := "j/k move · enter edit · d default · s save · x cancel run · q close"
-	reader := bufio.NewReader(in)
+	editing := false
+	input := ""
+	keys := make(chan keyResult, 1)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		reader := NewKeyReader(bufio.NewReader(in), in)
+		for {
+			key, err := reader.ReadKey()
+			select {
+			case keys <- keyResult{key: key, err: err}:
+			case <-done:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	resize := make(chan os.Signal, 1)
+	signal.Notify(resize, syscall.SIGWINCH)
+	defer signal.Stop(resize)
 	for {
 		width, _ := terminal.Size()
 		currentStatus := ""
 		if status != nil {
 			currentStatus = status()
 		}
-		terminal.Frame(settingsView(directory, values, selected, message, currentStatus, width))
-		key, err := ReadKey(reader, in)
-		if err != nil {
-			return err
+		terminal.Frame(settingsView(directory, values, selected, message, currentStatus, width, editing, input))
+		var key string
+		select {
+		case result := <-keys:
+			if result.err != nil {
+				return result.err
+			}
+			key = result.key
+		case <-resize:
+			continue
+		}
+		if editing {
+			switch key {
+			case "esc":
+				editing = false
+				message = "edit cancelled"
+			case "\r", "\n":
+				parsed, err := config.Parse(fields[selected].Key, input)
+				if err != nil {
+					message = err.Error()
+					continue
+				}
+				_ = config.Apply(&values, fields[selected].Key, parsed)
+				editing = false
+				message = "updated"
+				dirty = values != original
+			case "\x7f", "\b":
+				runes := []rune(input)
+				if len(runes) > 0 {
+					input = string(runes[:len(runes)-1])
+				}
+			default:
+				if len(key) == 1 && key[0] >= 32 {
+					input += key
+				}
+			}
+			continue
 		}
 		switch key {
 		case "j", "down":
@@ -88,75 +141,41 @@ func Settings(in, out *os.File, directory string, values config.Values, status f
 			}
 			return nil
 		case "\r", "\n":
-			terminal.Frame("\x1b[1m" + fields[selected].Label + "\x1b[0m: ")
-			line, err := readRawLine(reader, out)
-			if err != nil {
-				if errors.Is(err, errEditCancelled) {
-					message = "edit cancelled"
-					continue
-				}
-				return err
-			}
-			parsed, err := config.Parse(fields[selected].Key, strings.TrimSpace(line))
-			if err != nil {
-				message = err.Error()
-			} else {
-				_ = config.Apply(&values, fields[selected].Key, parsed)
-				message = "updated"
-				dirty = values != original
-			}
+			editing = true
+			input = config.Show(fields[selected].Key, values)
+			message = "enter accept · esc cancel"
 		}
 	}
 }
 
-func settingsView(directory string, values config.Values, selected int, message, status string, width int) string {
+type keyResult struct {
+	key string
+	err error
+}
+
+func settingsView(directory string, values config.Values, selected int, message, status string, width int, editing bool, input string) string {
 	header := config.Path(directory)
 	if status != "" {
 		header = status
 	}
 	var body strings.Builder
-	fmt.Fprintf(&body, "\x1b[1mherdr-review-loop settings\x1b[0m\n%s\n\n", Clip(header, width))
+	fmt.Fprintf(&body, "%s\n%s\n\n", Bold("herdr-review-loop settings"), Clip(header, width))
 	defaults := config.Defaults()
-	for index, field := range config.Fields() {
+	fields := config.Fields()
+	for index, field := range fields {
 		marker := " "
 		if index == selected {
 			marker = "›"
 		}
 		shown := Clip(config.Show(field.Key, values), width-22)
 		if config.Show(field.Key, values) == config.Show(field.Key, defaults) {
-			shown = "\x1b[2m" + shown + "\x1b[0m"
+			shown = Dim(shown)
 		}
 		fmt.Fprintf(&body, "%s %-18s %s\n", marker, field.Label, shown)
 	}
+	if editing {
+		fmt.Fprintf(&body, "\n%s: %s", Bold(fields[selected].Label), Clip(input, width-4))
+	}
 	fmt.Fprintf(&body, "\n%s", Clip(message, width))
 	return body.String()
-}
-
-func readRawLine(reader *bufio.Reader, out *os.File) (string, error) {
-	var line strings.Builder
-	for {
-		key, err := reader.ReadByte()
-		if err != nil {
-			return "", err
-		}
-		switch key {
-		case 27:
-			return "", errEditCancelled
-		case '\r', '\n':
-			_, _ = fmt.Fprint(out, "\r\n")
-			return line.String(), nil
-		case 127, 8:
-			runes := []rune(line.String())
-			if len(runes) > 0 {
-				line.Reset()
-				line.WriteString(string(runes[:len(runes)-1]))
-				_, _ = fmt.Fprint(out, "\b \b")
-			}
-		default:
-			if key >= 32 && key != 127 {
-				line.WriteByte(key)
-				_, _ = fmt.Fprintf(out, "%c", key)
-			}
-		}
-	}
 }

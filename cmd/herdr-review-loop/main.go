@@ -41,13 +41,13 @@ func run(args []string) error {
 	switch args[0] {
 	case "version":
 		if len(args) != 1 {
-			return errUsage
+			return usageError()
 		}
 		fmt.Println(version)
 		return nil
 	case "help":
 		if len(args) != 1 {
-			return errUsage
+			return usageError()
 		}
 		fmt.Println(usage)
 		return nil
@@ -65,7 +65,7 @@ func run(args []string) error {
 	case "review":
 		dryRun := len(args) == 2 && args[1] == "--dry-run"
 		if len(args) != 1 && !dryRun {
-			return errUsage
+			return usageError()
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -82,12 +82,12 @@ func run(args []string) error {
 		return err
 	case "stop":
 		if len(args) != 1 {
-			return errUsage
+			return usageError()
 		}
 		return stopRun(client, environment)
 	case "settings":
 		if len(args) != 1 {
-			return errUsage
+			return usageError()
 		}
 		return ui.Settings(os.Stdin, os.Stdout, environment.ConfigDir, values, func() string {
 			return settingsStatus(environment.StateDir)
@@ -99,7 +99,7 @@ func run(args []string) error {
 		})
 	case "open-panel":
 		if len(args) != 1 {
-			return errUsage
+			return usageError()
 		}
 		if existing, live := loop.LivePanel(environment.StateDir, environment.Context.WorkspaceID); live {
 			return client.PluginPaneFocus(context.Background(), existing.PaneID)
@@ -107,18 +107,23 @@ func run(args []string) error {
 		return openPane(context.Background(), client, "panel", environment.Context.FocusedPaneID, false)
 	case "open-settings":
 		if len(args) != 1 {
-			return errUsage
+			return usageError()
 		}
 		return openPane(context.Background(), client, "settings", environment.Context.FocusedPaneID, true)
 	case "panel":
 		if len(args) != 1 {
-			return errUsage
+			return usageError()
 		}
 		return panel(environment, values, client)
 	default:
 		fmt.Fprintln(os.Stderr, usage)
 		return errUsage
 	}
+}
+
+func usageError() error {
+	fmt.Fprintln(os.Stderr, usage)
+	return errUsage
 }
 
 func openPane(ctx context.Context, client herdr.Client, entrypoint, target string, popup bool) error {
@@ -158,6 +163,8 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 			} else {
 				message = "no pair: " + pickErr.Error()
 			}
+		} else {
+			message = "no pair: run this from your agent's pane"
 		}
 		pair.Lock()
 		pair.author, pair.reviewer, pair.message = authorText, reviewerText, message
@@ -198,7 +205,7 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		command.Stdin = nil
 		command.Stdout = nil
 		command.Stderr = nil
-		command.Env = os.Environ()
+		command.Env = append(os.Environ(), "HERDR_REVIEW_LOOP_AUTHOR="+environment.Context.FocusedPaneID)
 		command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err := command.Start(); err != nil {
 			return err.Error()

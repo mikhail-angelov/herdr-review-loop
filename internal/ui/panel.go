@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -21,7 +23,7 @@ func PanelView(state PanelState, width, rows int) string {
 	if state.Running {
 		status = "● running"
 	}
-	header := []string{"\x1b[1m" + Clip("herdr-review-loop  "+status, width) + "\x1b[0m", Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
+	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
 	footer := append([]string{""}, strings.Split(Lines("r review · x stop · s settings · q close", width), "\n")...)
 	tail := []string{}
 	for _, line := range strings.Split(state.Tail, "\n") {
@@ -64,9 +66,9 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 	defer terminal.Close()
 	keys := make(chan string, 1)
 	go func() {
-		reader := bufio.NewReader(in)
+		reader := NewKeyReader(bufio.NewReader(in), in)
 		for {
-			key, err := ReadKey(reader, in)
+			key, err := reader.ReadKey()
 			if err != nil {
 				return
 			}
@@ -75,6 +77,9 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 	}()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
+	resize := make(chan os.Signal, 1)
+	signal.Notify(resize, syscall.SIGWINCH)
+	defer signal.Stop(resize)
 	message := ""
 	for {
 		state := refresh()
@@ -96,6 +101,7 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 				message = settings()
 			}
 		case <-tick.C:
+		case <-resize:
 		}
 	}
 }

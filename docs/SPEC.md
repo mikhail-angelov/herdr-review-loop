@@ -4,9 +4,8 @@ A rewrite of the Node.js Herdr plugin `hreview` as a single Go binary, installab
 without a Go toolchain. The plugin is renamed to match this repository: everything ships
 from `herdr-review-loop`.
 
-The predecessor repository is being retired, so nothing here depends on it. Its source is
-frozen under [`reference/`](reference/) for the porting phase and is deleted with T4.2;
-the prompts, the only part of it that is normative, are reproduced in **Appendix A**.
+The predecessor repository is being retired, so nothing here depends on it. The prompts,
+the only part of it that is normative, are reproduced in **Appendix A**.
 
 - **Repository:** `github.com/mikhail-angelov/herdr-review-loop`
 - **Go module:** `github.com/mikhail-angelov/herdr-review-loop`
@@ -98,7 +97,6 @@ Makefile                        build · test · tidy · install-plugin
 .github/workflows/              ci.yml · release.yml
 .golangci.yml  .gitignore  README.md  LICENSE
 docs/SPEC.md  docs/TASKS.md
-docs/reference/                 frozen Node source, deleted with T4.2 (not built)
 ```
 
 Dependency direction: `cmd` → `loop`/`ui` → `config`/`herdr`. No cycles. `loop` reaches
@@ -113,10 +111,9 @@ Two modules, both `golang.org/x` — the same maintenance tier as the standard l
 | `golang.org/x/term` | Raw mode and terminal size for the two panes. | 1 411 LOC, no transitive deps beyond `x/sys` |
 | `golang.org/x/sys/unix` | `unix.Flock` for the run lock (§9.1) and `x/term`'s own backing. | Generated syscall tables; only the used symbols link, so the binary does not grow |
 
-Measured: a binary using both is **1.9 MB** — the same as a stdlib-only binary of the
-same shape. Terminal handling (~200 lines) and ANSI styling (~10 lines) are ported from
-`docs/reference/tui.js`, which is proven in exactly this environment. See §9.3 for the
-alternative that was measured and rejected.
+Measured: the stripped release build is **2.8 MB**. Terminal handling (~200 lines) and ANSI styling (~10 lines) are deliberately
+small and tailored to the two panes. See §9.3 for the alternative that was measured and
+rejected.
 
 ---
 
@@ -352,8 +349,9 @@ live only when both still match — the same identity rule as the run lock (§5.
 same reason and with a worse failure mode. A pid alone is not an identity: once the number
 is recycled, a record naming a stranger reads as "a panel is already open", and every new
 panel closes itself in favour of a pane that is not there, leaving the workspace unable to
-open a panel at all. Unlike the run lock, nothing else here would catch that — there is no
-`flock` behind the panel record, because a window is not exclusive the way a run is.
+open a panel at all. A short-lived advisory guard serializes the read/clear/publish claim
+transition, so a stale-record cleanup cannot delete a newly claimed live panel. The guard
+is released immediately after claiming; panel liveness still comes only from the record.
 
 ### 5.8 The settings pane
 
@@ -700,27 +698,25 @@ cleans up on its behalf. In Go the loop runs its herdr calls under a context: SI
 cancels the in-flight call, and the loop clears its own progress token, releases its own
 lock and logs its own cancellation. `SIGKILL` stays as the fallback.
 
-**9.3 The TUI is ported, not replaced.** `docs/reference/tui.js` hand-rolls raw mode, escape-sequence
-reassembly across reads, bracketed-paste detection and framing — 124 lines, and the
-obvious candidate for a library. Bubbletea was measured and rejected:
+**9.3 The TUI is deliberately small, not framework-based.** It hand-rolls raw mode,
+escape-sequence reassembly across reads, bracketed-paste detection and framing — a small
+enough surface that a framework would cost more than it saves. Bubbletea was measured and rejected:
 
-| | `x/term` + ported `tui.js` | bubbletea |
+| | `x/term` + local terminal code | bubbletea |
 | --- | --- | --- |
 | modules in the tree | 2 (`x/term`, `x/sys`) | 17 |
 | third-party LOC | ~1.6k | ~54.7k |
-| binary | 1.9 MB | 2.5 MB (**+32 %**) |
+| binary | 2.8 MB | additional measurement required |
 | our code | ~200 lines | model boilerplate |
 
-The tree carries `uniseg` (16k LOC of Unicode width tables), `terminfo`, `go-colorful`,
-`coninput` (Windows console — the manifest declares `linux, macos`), and `lipgloss`
-regardless of whether we import it: `go mod why` shows `bubbletea → lipgloss`, so
-declining it as a direct dependency saves nothing.
+Bubbletea would add a larger terminal abstraction and its dependency graph to a pane that
+needs only a full-frame redraw and a handful of keys.
 
 What the panes actually need is one full-frame redraw per tick and four to six keys — no
 mouse, no alt-screen, no scrolling viewport, no cursor-addressed text input. The two
 subtle parts (an escape sequence split across two reads, and bracketed-paste markers
-being read as five keystrokes the first of which means "quit") are already solved in
-`tui.js` and port directly. Revisit if a pane grows a scrolling viewport or a real text
+being read as five keystrokes the first of which means "quit") are handled locally.
+Revisit if a pane grows a scrolling viewport or a real text
 editor.
 
 **9.4 Durations become strings.** `"30m"` instead of `1800000`, parsed by
@@ -758,7 +754,7 @@ already paid for once.
 
 1. `make build && make test` clean; `gofmt -l .` empty; `go vet` and `golangci-lint` clean
    on Go 1.26. `go list -m all` shows two modules, both `golang.org/x`; the release binary
-   is ≈2 MB.
+   is ≈3 MB.
 2. `herdr plugin link .`, then from a workspace with a claude pane and a codex pane:
    `herdr-review-loop.pair` names the right pair; `herdr-review-loop.review` runs a full loop to a clean
    verdict; `herdr-review-loop.stop` cancels a running loop from a third pane; the panel opens at a
@@ -791,10 +787,9 @@ already paid for once.
 
 ## Appendix A — Prompt templates (normative)
 
-Copied from the Node implementation's `index.js` (`reviewPrompt`, `fixPrompt`), frozen at
-`hreview@517458be48ea0e72c6c035a542517cae16547d60` and mirrored under `docs/reference/`.
-**This appendix is the normative copy** — the snapshot is provenance, and the upstream
-repository is being deleted. Neither is a place to look this up later; this is.
+Copied from the Node implementation's `index.js` (`reviewPrompt`, `fixPrompt`) at
+`hreview@517458be48ea0e72c6c035a542517cae16547d60`. **This appendix is the normative
+copy**; the upstream repository is being deleted and is not needed to maintain this one.
 
 ### A.1 Review prompt
 

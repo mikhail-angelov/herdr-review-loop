@@ -1,12 +1,20 @@
 # herdr-review-loop
 
+[![CI](https://github.com/mikhail-angelov/herdr-review-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/mikhail-angelov/herdr-review-loop/actions/workflows/ci.yml)
+
 `herdr-review-loop` lets the agent in the current Herdr pane and an agent of a
 different kind in the same workspace review one another in a bounded loop.
+
+## Requirements
+
+Herdr 0.7.5 or newer on macOS or Linux. Installed releases include a matching
+binary, so Go is needed only to build an unreleased checkout.
 
 ## Install
 
 ```sh
 herdr plugin install mikhail-angelov/herdr-review-loop
+herdr server reload-config
 ```
 
 The plugin downloads a matching release binary when one exists; otherwise a Go
@@ -17,20 +25,22 @@ make build
 herdr plugin link .
 ```
 
-## Commands
+## Commands and review contract
 
-`review` runs the loop, and `review --dry-run` prints the selected author and
-reviewer without changing anything. `stop` cancels the active loop. The panel
-and settings actions open their corresponding panes.
+| Command | What it does |
+| --- | --- |
+| `review` | Runs the reviewer → author → reviewer loop. It exits 0 only when the review is clean. |
+| `review --dry-run` | Prints the author and reviewer without taking a lock or writing files. |
+| `stop` | Cancels the active loop from any pane. |
+| `open-panel` / `open-settings` | Opens the corresponding pane. |
 
 The reviewer writes `review.md` by default. Its first non-empty line must be
 either `STATUS: CLEAN` or `STATUS: FINDINGS`; any other result is treated as
 findings so the loop errs toward another review.
 
-Configuration is stored in Herdr's plugin config directory as `config.json`.
-Supported keys are `reviewer_kind`, `reviewer_name`, `max_iterations`,
-`review_file`, `review_timeout`, `fix_timeout`, `reset_command`, and `scope`.
-Durations use Go notation such as `30m` or `90s`.
+The reviewer session is reset before every round, while the author's session is
+kept: the author needs the context of findings it accepted or rejected; the
+reviewer must judge the current code afresh.
 
 ## Keybindings and panes
 
@@ -41,11 +51,44 @@ Bind the actions in your Herdr keybindings, for example:
 [[keybindings]]
 key = "ctrl-r"
 action = "herdr-review-loop.review"
+
+[[keybindings]]
+key = "ctrl-shift-r"
+action = "herdr-review-loop.stop"
+
+[[keybindings]]
+key = "ctrl-alt-r"
+action = "herdr-review-loop.panel"
+
+[[keybindings]]
+key = "ctrl-,"
+action = "herdr-review-loop.settings"
 ```
 
 The panel uses `r` to start a review, `x` to cancel it, `s` for settings, and
 `q` to close. Settings use `j`/`k` or arrows to select, Enter to edit, `d` to
-restore a default, `s` to save, and `q` to close. `stop` is safe from any pane.
+restore a default, `s` to save, `x` to cancel the loop, and `q` to close.
+`stop` is safe from any pane. The panel is a detached process, so closing it
+never cancels a review in progress.
+
+## Configuration
+
+Configuration is stored in Herdr's plugin config directory as `config.json`.
+Durations use Go notation such as `30m` or `90s`.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `reviewer_kind` | empty | Reviewer agent kind; empty chooses a different kind. |
+| `reviewer_name` | empty | Reviewer name or pane id; overrides `reviewer_kind`. |
+| `max_iterations` | `10` | Maximum review rounds. |
+| `review_file` | `review.md` | Reviewer output, relative to the repository. |
+| `review_timeout` | `30m` | Budget for one review phase. |
+| `fix_timeout` | `30m` | Budget for one author fix phase. |
+| `reset_command` | empty | Overrides the built-in reviewer reset command. |
+| `scope` | uncommitted changes plus branch commits | Text inserted into the review prompt. |
+
+Invalid values and unknown keys are ignored with a warning; the loop uses the
+default instead. The settings pane validates values before saving them.
 
 ## Migrating the Node config
 

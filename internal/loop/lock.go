@@ -2,7 +2,9 @@ package loop
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,23 +40,24 @@ func ClaimPanel(stateDir, workspace, paneID string) (PanelRecord, bool, error) {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		return PanelRecord{}, false, err
 	}
+	guard, err := acquirePanelGuard(stateDir, workspace)
+	if err != nil {
+		return PanelRecord{}, false, err
+	}
+	defer func() { _ = guard.Close() }()
 	record := PanelRecord{PID: os.Getpid(), PaneID: paneID}
-	var err error
 	record.ProcessStarted, err = processStart(record.PID)
 	if err != nil {
 		return PanelRecord{}, false, err
 	}
 	path := panelPath(stateDir, workspace)
 	for attempts := 0; attempts < 2; attempts++ {
-		data, _ := json.Marshal(record)
-		file, createErr := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if createErr == nil {
-			_, writeErr := file.Write(append(data, '\n'))
-			closeErr := file.Close()
-			if writeErr != nil {
-				return PanelRecord{}, false, writeErr
-			}
-			return record, true, closeErr
+		created, createErr := publishPanel(path, record)
+		if createErr == nil && created {
+			return record, true, nil
+		}
+		if createErr != nil {
+			return PanelRecord{}, false, createErr
 		}
 		existing, readErr := readPanel(path)
 		if readErr == nil && panelAlive(existing) {
@@ -64,7 +67,59 @@ func ClaimPanel(stateDir, workspace, paneID string) (PanelRecord, bool, error) {
 	}
 	return PanelRecord{}, false, fmt.Errorf("cannot claim panel record")
 }
+
+// The guard exists only while a process reads, clears, and publishes the panel
+// record. It does not represent a live panel; the record's pid/start identity
+// remains the source of truth after the claim completes.
+func acquirePanelGuard(stateDir, workspace string) (*os.File, error) {
+	file, err := os.OpenFile(panelPath(stateDir, workspace)+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err = unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+// publishPanel writes a complete record before linking it into place. os.Link is an
+// atomic create-if-absent operation, so a competing claim can never observe a
+// half-written record and mistake it for a stale panel.
+func publishPanel(path string, record PanelRecord) (bool, error) {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return false, err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".panel-*")
+	if err != nil {
+		return false, err
+	}
+	name := temp.Name()
+	defer func() { _ = os.Remove(name) }()
+	if err = temp.Chmod(0o600); err == nil {
+		_, err = temp.Write(append(data, '\n'))
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return false, err
+	}
+	if err = os.Link(name, path); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
 func LivePanel(stateDir, workspace string) (PanelRecord, bool) {
+	guard, err := acquirePanelGuard(stateDir, workspace)
+	if err != nil {
+		return PanelRecord{}, false
+	}
+	defer func() { _ = guard.Close() }()
 	record, err := readPanel(panelPath(stateDir, workspace))
 	if err != nil {
 		return PanelRecord{}, false

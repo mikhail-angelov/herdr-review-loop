@@ -1,0 +1,7 @@
+A review of your changes is in /repo/review.md.
+
+Read it and apply every finding you agree with. Deliberately skip the ones you
+consider wrong or out of scope. Do not edit /repo/review.md.
+
+When you are done, summarize in a few lines what you applied and what you rejected
+and why — the reviewer will re-review from the code, not from your summary.

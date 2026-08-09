@@ -197,7 +197,7 @@ sent at all.
 ## Phase 3 — Panes
 
 ### T3.0 — Terminal plumbing `feat`
-`ui/tui.go`, ported from `docs/reference/tui.js` onto `golang.org/x/term`: raw mode on start and restore
+`ui/tui.go`, implemented on `golang.org/x/term`: raw mode on start and restore
 on exit, hide/show cursor, full-frame write, SIGWINCH-driven re-render, and the key
 decoder — a chunk split into keys, whole escape sequences kept intact
 (`ESC [ … @-~` and `ESC O @-~`), an unfinished trailing sequence held for 40 ms for the
@@ -246,14 +246,12 @@ development install. Then bump the manifest to `0.1.0`, tag, and verify the whol
 path end to end on a machine without Go (DoD §10.3).
 **Done:** a reader with no context installs and binds keys from the README alone.
 
-### T4.3 — Retire the reference snapshot `chore`
-*deps: T4.2* — With parity verified against a live workspace, delete `docs/reference/` and
-drop the pointers to it (§3 layout, §3.1, §9.3, T3.0). Before deleting, confirm nothing is
-still only recorded there: the settings field labels and hints, the user-facing error and
-cancel-outcome wording, and the key-decoder rules must all have landed in Go code or in
-SPEC §5/§6/Appendix A.
-**Done:** `grep -ri "docs/reference" .` is empty, the tree builds and tests pass, and the
-predecessor repository can be deleted without this one losing anything.
+### T4.3 — Retire the reference snapshot `chore` ✓
+*deps: T4.2* — The porting snapshot and all pointers to it have been removed. Settings
+field labels and hints, user-facing error and cancellation wording, and key-decoder rules
+are now maintained in Go code or SPEC §5/§6/Appendix A.
+**Done:** the tree builds and tests pass without any snapshot dependency; the predecessor
+repository can be deleted without this one losing anything.
 
 ---
 

@@ -111,7 +111,7 @@ func (p *settingsPane) edit(key string) {
 		_ = config.Apply(&p.values, p.fields[p.selected].Key, parsed)
 		p.editing = false
 		p.message = "updated"
-		p.dirty = p.values != p.original
+		p.dirty = !config.Same(p.values, p.original)
 	case "\x7f", "\b":
 		runes := []rune(p.input)
 		if len(runes) > 0 {
@@ -168,7 +168,7 @@ func (p *settingsPane) restoreDefault() {
 	}
 	_ = config.Apply(&p.values, key, parsed)
 	p.message = "restored default"
-	p.dirty = p.values != p.original
+	p.dirty = !config.Same(p.values, p.original)
 }
 
 func (p *settingsPane) save() {

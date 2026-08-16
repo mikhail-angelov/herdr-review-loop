@@ -67,11 +67,14 @@ type OpenQuestion struct {
 }
 
 // Review is one round's structured verdict, as the reviewer writes it and the loop reads it back.
+// Filtered is the loop's own: findings the reviewer raised that did not clear min_verdict. They
+// are kept here so nothing a run produced is lost, and they are never sent to the author.
 type Review struct {
 	Status        string         `json:"status"`
 	Findings      []Finding      `json:"findings"`
 	OpenQuestions []OpenQuestion `json:"open_questions"`
 	PreExisting   []Finding      `json:"pre_existing"`
+	Filtered      []Finding      `json:"filtered,omitempty"`
 }
 
 // Resolution is what a round's review means once the loop has resolved the reviewer's status
@@ -107,9 +110,39 @@ func (r Review) Resolve() Resolution {
 }
 
 // AuthorView is the review as the author receives it: the findings it must decide on, and nothing
-// it has no say over. Pre-existing findings are kept for the report, not sent to the author.
+// it has no say over. Pre-existing and filtered findings are kept for the report, not sent on.
 func (r Review) AuthorView() Review {
 	return Review{Status: r.Status, Findings: r.Findings}
+}
+
+// Filter withholds the findings that did not clear the verdict bar. A false positive costs more
+// in a loop than in a report — a human discards it, whereas the author goes and "fixes" something
+// that is not there — so the bar is applied before the author sees anything.
+//
+// The round verdict is resolved after this, never before: a round whose findings were all
+// filtered has nothing for the author to do, so it is clean. That it is clean by filtering rather
+// than by agreement is what Filtered records, in the panel, the archive and the report alike.
+func (r Review) Filter(minVerdict string) Review {
+	if minVerdict != VerdictConfirmed || len(r.Findings) == 0 {
+		return r
+	}
+	kept := make([]Finding, 0, len(r.Findings))
+	var filtered []Finding
+	for _, finding := range r.Findings {
+		if finding.Verdict == VerdictPlausible {
+			filtered = append(filtered, finding)
+			continue
+		}
+		kept = append(kept, finding)
+	}
+	if len(filtered) == 0 {
+		return r
+	}
+	r.Findings, r.Filtered = kept, filtered
+	if len(kept) == 0 {
+		r.Findings, r.Status = nil, StatusClean
+	}
+	return r
 }
 
 // IDs lists the ids the author is required to decide on, in the reviewer's own ranking order.
@@ -167,6 +200,10 @@ func normalizeTitle(title string) string {
 // into the degradation ladder.
 var ErrNoReview = errors.New("no review could be read from the output")
 
+// NotePrefixParseFallback marks the note a parse that had to fall back to an older form leaves
+// behind, so the run can raise it as the event it is rather than only logging the text.
+const NotePrefixParseFallback = "parse_fallback: "
+
 // ParseReview reads the reviewer's output. It tries JSON first and the v1 markdown form second,
 // and returns the notes describing everything it had to drop or fall back to, so the run's archive
 // records a degradation rather than hiding it.
@@ -182,7 +219,7 @@ func ParseReview(raw string) (review Review, notes []string, err error) {
 		return Review{}, nil, ErrNoReview
 	}
 	review, notes = review.normalize()
-	return review, append([]string{"parse_fallback: markdown"}, notes...), nil
+	return review, append([]string{NotePrefixParseFallback + "markdown"}, notes...), nil
 }
 
 // normalize applies every per-field rule of the contract, dropping what it cannot use and naming

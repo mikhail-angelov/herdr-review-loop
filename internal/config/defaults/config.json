@@ -1,0 +1,13 @@
+{
+  "profile": "default",
+  "scope": "worktree",
+  "reviewer": { "kind": "", "name": "" },
+  "max_iterations": 10,
+  "min_verdict": "confirmed",
+  "timeouts": { "review": "30m", "fix": "30m", "stall": "5m" },
+  "retries": 1,
+  "archive": { "keep": 20, "raw_output": true },
+  "review_command": {},
+  "reset_command": "",
+  "rounds": [{ "level": "high" }]
+}

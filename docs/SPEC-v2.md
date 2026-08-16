@@ -814,7 +814,8 @@ there. §5.3
 
 ### Phase 7 — Delegated review
 
-Not started before phases 5–6 have run on real work.
+Not started before phases 5–6 have run on real work. That gate is met: phases 5–6 shipped, were
+used on real diffs and on this document, and the one-shot review in §11 came out of that use.
 
 **T7.1 — Layers and profiles `feat`** *deps: T5.1*
 `embed.FS` defaults, per-file resolution across four layers, per-key `config.json` merge,
@@ -830,6 +831,25 @@ prompt for kinds with no native command. §4.3, §6.1, §6.4
 **Done:** a claude reviewer runs its own review command and writes conforming
 `review.json`; the same for codex; an unknown kind falls back and still produces a valid
 round. The in-pane form of each command is confirmed by hand before the table is written.
+
+The table was written against the shipped binaries — codex-cli 0.147.0 and Claude Code 2.1.224 —
+rather than from memory: codex's in-pane `/review` ("review any changes and find issues", default
+scope "the current code changes (staged, unstaged, and untracked files)") takes free text and has no
+level argument; claude's `/code-review` takes `low|medium|high|max` as its own argument and
+`/security-review` is a separate command. `ultra` is excluded deliberately — it is multi-agent,
+billed and user-triggered, and §2.2 puts fan-out out of scope.
+
+Two consequences fell out of that check and are built in:
+
+- Because a slash command occupies its whole line, a kind whose argument slot is its level has
+  nowhere to put the round's instructions. Those kinds get a preamble turn first. The adapter says
+  so per kind rather than pretending to one transport, which is §6.1's own rule.
+- Both commands render findings into the host UI, so the capture step is not optional for either.
+
+**Still unconfirmed in a live pane:** whether the in-pane `/review` accepts the custom-instruction
+argument its CLI form documents. If it does not, codex's round instructions are ignored rather than
+lost — the review still runs at codex's default scope, which is this loop's, and the capture step
+still records it. That is the one thing left for a person at a keyboard.
 
 **T7.3 — Round policy `feat`** *deps: T7.2*
 `rounds` drives level, command and instructions per round; the last entry repeats. §6.2
@@ -880,6 +900,17 @@ T8.3 depends only on T5.3 and T9.1 only on T7.3, so both can move earlier if con
 T7.2 is the highest-risk task and can be prototyped by hand against both CLIs before T5.1
 is finished.
 
+### Status
+
+Every task in this plan is built: phases 5 and 6 whole, then T7.1 through T7.5, T8.1 through T8.3,
+and T9.1.
+
+One acceptance condition is met only in part, and it is named where it belongs, in T7.2: the review
+command table was written against the shipped codex and claude binaries rather than confirmed in a
+live pane. What a pane would still settle is whether the in-pane `/review` takes the argument its
+CLI form documents. Everything else in T7.2 — the capture step, the overrides, the fallback — is
+covered by tests.
+
 ---
 
 ## 13. Definition of done
@@ -906,6 +937,17 @@ is finished.
    is one line of `events.jsonl` away.
 10. Criteria 1–6 hold at the end of phase 6, on their own. If they hold and the loop is not
     better to use than v1, the rest of the plan is not the fix and is not built (§12).
+
+These are not left as prose to re-check by hand. `internal/loop/done_test.go` encodes the ones that
+can be: criterion 2, criterion 6 across every way a run can end, criterion 7, and criterion 9.
+
+Criterion 6 gets the most weight, because it is the only one stated as an invariant rather than as a
+feature. Features are tested where they are built; an invariant has to be tested across the paths
+that could break it, which for this one is every ending a run has — clean, clean after a fix, a
+spent budget, an open question, a filter that withheld everything, a filter that withheld some, a
+pre-existing finding, an author that decided nothing, and a stuck pair. Each asserts that the report
+holds exactly the findings the reviewer raised, once each, with an id, a fingerprint, a round, and
+an action from the closed set of §5.4.
 
 ---
 

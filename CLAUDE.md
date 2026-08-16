@@ -15,8 +15,10 @@ the diff under review or a round checkpoint. Everything a run produced is archiv
 state directory, where `report.json` accounts for every finding the run raised.
 
 [docs/SPEC-v2.md](docs/SPEC-v2.md) is normative for the artifact layout, the review contract, the
-archive and the exit codes; [docs/SPEC.md](docs/SPEC.md) still describes everything v2 does not
-cover. Phases 5 and 6 of SPEC-v2 §12 are built; §12 gates phases 7–9 behind real use of them.
+configuration layers, the archive and the exit codes; [docs/SPEC.md](docs/SPEC.md) still describes
+everything v2 does not cover. Every task in SPEC-v2 §12 is built. The one open question is named in
+T7.2: the review command table was written against the shipped codex and claude binaries, and a live
+pane would still settle whether the in-pane `/review` takes the argument its CLI form documents.
 
 ## Build, test and lint
 
@@ -36,7 +38,8 @@ go test -run TestName ./internal/loop/
 
 - `cmd/herdr-review-loop/main.go` — `main()` only calls `run([]string) error`. `run` dispatches a
   verb through the `commands` table; each verb is one named function taking an `application`
-  (environment, config, client). Everything Herdr-facing is reached through `herdr.Client`.
+  (environment, config, client, and `resolve` for the invocation layer). Everything Herdr-facing is
+  reached through `herdr.Client`. `configure.go` holds `config` and `init`.
 - `internal/herdr` — the Herdr CLI as a Go API. `Client` shells out per call and decodes the JSON
   envelope; `Error` carries Herdr's error code so callers branch with `errors.As`. `Environment`
   decodes the plugin context the host exports; `PickReviewer` chooses the second agent.
@@ -49,18 +52,33 @@ go test -run TestName ./internal/loop/
     points at and a symlink planted mid-run would redirect the agents' writes too.
   - `findings.go` / `decisions.go` — the review contract. Ids and fingerprints are assigned by the
     loop; `Review.Resolve` is where a status is weighed against its arrays, and it is the only place
-    a clean verdict is decided.
+    a clean verdict is decided. `Review.Filter` applies `min_verdict` *after* the ids and *before*
+    `Resolve`, so a round whose findings were all withheld is clean and says why.
+  - `policy.go` / `scope.go` — the round policy and what is under review, each turning configuration
+    into the block the reviewer and the author are sent. The last `rounds` entry repeats forever.
+  - `adapter.go` — kind → its own review command, plus the capture step that turns what the command
+    rendered into the host UI into `review.json`. A kind with no entry gets the built-in prompt,
+    which is the only place a review taxonomy of ours remains. Expect this table to rot when an
+    agent CLI moves; `review_command` overrides any kind, and `parse_fallback` events are the trail.
   - `archive.go` / `render.go` — the per-run archive and the single renderer `show` and the history
     pane both call.
+  - `watchdog.go` — `WatchStall` cancels a phase whose agent has produced no observable output for
+    `timeouts.stall`; the stall is a retry, not a terminal failure.
+  - `stuck.go` — a fingerprint applied in three consecutive rounds and raised again each time is a
+    deadlock, not progress, and ends the run instead of spending the budget.
   - `exit.go` — `ExitError`, so an exit code is chosen where the outcome is known.
   - `checkpoint.go` — snapshots the worktree into refs under `refs/herdr-review-loop/` using a
     temporary `GIT_INDEX_FILE`, leaving the user's index, stash and HEAD untouched. `Tree`/`Diff`
     over the same mechanism produce each round's `changes.patch`, new files included.
   - `lock.go` — `Lock`/`PanelRecord` identify their owner by pid *and* process start time.
-- `internal/config` — settings, loaded over defaults. The file is nested (`reviewer`, `timeouts`,
+- `internal/config` — the settings and the layers they come from. `Resolve` merges built-in defaults
+  (`defaults/`, embedded), then the selected profile, then user, project and invocation, per key;
+  `rounds` is replaced whole by the layer that defines it. One decoder reads both file kinds,
+  because a profile *is* a `config.json` under a name. The file is nested (`reviewer`, `timeouts`,
   `archive`); field keys are the dotted paths, so the settings pane, the loader and the writer share
-  one name per setting. A malformed setting produces a warning and the default, never a failure:
-  `stop` has to work even when `config.json` is broken.
+  one name per setting. A malformed setting produces a warning and the layer below, never a failure:
+  `stop` has to work even when `config.json` is broken. `Save` merges into the existing file rather
+  than replacing it, so a save from the pane never drops a hand-written `rounds`.
 - `internal/ui` — the three panes (panel, settings, history) over a small raw-mode terminal. Each
   falls back to a plain-text dump when its file is not a TTY.
 - `bin/*.sh` — the entry points named by `herdr-plugin.toml`.

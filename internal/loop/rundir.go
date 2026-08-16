@@ -114,6 +114,33 @@ func (d *RunDir) Prepare() error {
 	return nil
 }
 
+// Publish writes one run-level file and returns the absolute path an agent is given for it. The
+// run directory is inside the repository precisely so a sandboxed agent can read what is put here.
+func (d *RunDir) Publish(name, contents string) (string, error) {
+	if err := d.verify(PluginDir, RunSubdir); err != nil {
+		return "", err
+	}
+	path := RunSubdir + "/" + name
+	if err := d.root.WriteFile(path, []byte(contents), 0o600); err != nil {
+		return "", fmt.Errorf("failed to write %s: %w", path, err)
+	}
+	return d.Absolute(path), nil
+}
+
+// Document resolves a repository-relative path the agents will be pointed at, checking through the
+// same rooted handle everything else uses: a scope that reached outside the repository would take
+// both agents with it.
+func (d *RunDir) Document(relative string) (string, error) {
+	info, err := d.root.Lstat(relative)
+	if err != nil {
+		return "", fmt.Errorf("failed to inspect %s: %w", relative, err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s must be a regular file, not %s", relative, describeMode(info.Mode()))
+	}
+	return d.Absolute(relative), nil
+}
+
 // Remove deletes the run directory, which is all finish has to clean out of the working tree.
 func (d *RunDir) Remove() error {
 	if err := d.root.RemoveAll(RunSubdir); err != nil && !errors.Is(err, fs.ErrNotExist) {

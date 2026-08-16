@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -115,6 +116,9 @@ const (
 	EventParseFallback = "parse_fallback"
 	EventDegraded      = "degraded"
 	EventCanceled      = "canceled"
+	// EventFiltered names the findings min_verdict withheld from the author, so a round that came
+	// back clean because nothing cleared the bar is never confused with one nothing was found in.
+	EventFiltered = "filtered"
 )
 
 // Event appends one line to the run's event stream.
@@ -157,8 +161,12 @@ func ReadEvents(dir string) []Event {
 }
 
 // roundDir creates and returns one round's directory inside the archive.
+// roundName is the archive's directory for one round, named in one place so a reader and a writer
+// cannot disagree about it.
+func roundName(round int) string { return fmt.Sprintf("%s%02d", roundDirPrefix, round) }
+
 func (a *Archive) roundDir(round int) (string, error) {
-	dir := filepath.Join(a.Dir, fmt.Sprintf("%s%02d", roundDirPrefix, round))
+	dir := filepath.Join(a.Dir, roundName(round))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create %s: %w", dir, err)
 	}
@@ -167,23 +175,68 @@ func (a *Archive) roundDir(round int) (string, error) {
 
 // Prompt keeps what an agent was sent, verbatim.
 func (a *Archive) Prompt(round int, phase, text string) error {
-	name := promptReview
-	if phase == PhaseFix {
-		name = promptFix
-	}
-	return a.writeRound(round, name, text)
+	return a.PromptAttempt(round, phase, 0, false, text)
 }
 
 // Raw keeps what an agent answered, verbatim, unless raw output is turned off.
 func (a *Archive) Raw(round int, phase, text string) error {
+	return a.RawAttempt(round, phase, 0, false, text)
+}
+
+// PromptAttempt keeps every command sent in a phase. Retries and reformat turns get their own
+// file rather than overwriting the first prompt, which is needed to explain a degraded round.
+func (a *Archive) PromptAttempt(round int, phase string, attempt int, reformat bool, text string) error {
+	return a.writeRound(round, turnFile(promptFile(phase), attempt, reformat), text)
+}
+
+// RawAttempt keeps every answer in a phase, unless raw output is turned off. Its file name stays
+// paired with PromptAttempt's, so a failed attempt remains diagnosable after a later retry works.
+func (a *Archive) RawAttempt(round int, phase string, attempt int, reformat bool, text string) error {
 	if !a.RawOutput {
 		return nil
 	}
-	name := rawReview
-	if phase == PhaseFix {
-		name = rawFix
+	return a.writeRound(round, turnFile(rawFile(phase), attempt, reformat), text)
+}
+
+func promptFile(phase string) string {
+	switch phase {
+	case PhaseFix:
+		return promptFix
+	case PhaseBrief:
+		return "prompt-brief.md"
+	case PhaseOneShotAction:
+		return "prompt-one-shot-action.md"
 	}
-	return a.writeRound(round, name, text)
+	return promptReview
+
+}
+
+func rawFile(phase string) string {
+	switch phase {
+	case PhaseFix:
+		return rawFix
+	case PhaseBrief:
+		return "brief.raw.txt"
+	case PhaseOneShotAction:
+		return "one-shot-action.raw.txt"
+	}
+	return rawReview
+}
+
+func turnFile(name string, attempt int, reformat bool) string {
+	if attempt == 0 && !reformat {
+		return name
+	}
+	extension := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, extension)
+	if strings.HasSuffix(name, ".raw.txt") {
+		extension = ".raw.txt"
+		stem = strings.TrimSuffix(name, extension)
+	}
+	if reformat {
+		return fmt.Sprintf("%s-reformat-%02d%s", stem, attempt+1, extension)
+	}
+	return fmt.Sprintf("%s-retry-%02d%s", stem, attempt, extension)
 }
 
 // Parsed keeps the loop's own reading of an agent's output: the review with its ids and
@@ -199,6 +252,26 @@ func (a *Archive) Parsed(round int, name string, value any) error {
 // Patch keeps everything the author phase changed, new files included.
 func (a *Archive) Patch(round int, patch string) error {
 	return a.writeRound(round, changesPatch, patch)
+}
+
+// Patches concatenates every round's changes.patch up to but not including the given round. It is
+// the baseline a regressions-only pass is judged against: what the fixes so far actually changed.
+// A round with no patch contributes nothing, so an interrupted round does not break the baseline.
+func (a *Archive) Patches(before int) string {
+	var baseline strings.Builder
+	for round := 1; round < before; round++ {
+		data, err := os.ReadFile(filepath.Join(a.Dir, roundName(round), changesPatch))
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		fmt.Fprintf(&baseline, "### round %d\n\n", round)
+		baseline.Write(data)
+		if !strings.HasSuffix(string(data), "\n") {
+			baseline.WriteString("\n")
+		}
+		baseline.WriteString("\n")
+	}
+	return baseline.String()
 }
 
 func (a *Archive) writeRound(round int, name, text string) error {
@@ -257,6 +330,20 @@ func ReadReport(stateDir, runID string) (Report, bool) {
 		return Report{}, false
 	}
 	return report, true
+}
+
+// ReadManifest loads a run's resolved configuration, which is what explains a month-old run
+// without the tree it ran against.
+func ReadManifest(stateDir, runID string) (Manifest, bool) {
+	data, err := os.ReadFile(filepath.Join(ArchiveDir(stateDir, runID), manifestFile)) //nolint:gosec // the path is built from the plugin's own state directory
+	if err != nil {
+		return Manifest{}, false
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return Manifest{}, false
+	}
+	return manifest, true
 }
 
 // ReadRoundReview loads a round's parsed review out of the archive.

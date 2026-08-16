@@ -15,6 +15,10 @@ const (
 	ActionDeferred = "deferred"
 	// ActionMissing is written by the loop for an id the author was given and decided nothing about.
 	ActionMissing = "missing"
+	// ActionFiltered marks a finding that was below min_verdict and never sent to the author. Its
+	// note is the verdict that filtered it, so a bar set too high is visible in the run that
+	// suffered from it rather than silent.
+	ActionFiltered = "filtered"
 	// ActionPreExisting marks a finding the reviewer said predated the diff, which is never sent.
 	ActionPreExisting = "pre_existing"
 	// ActionUnreviewed marks a finding raised in a round that no author phase followed.

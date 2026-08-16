@@ -1,0 +1,8 @@
+{
+  "description": "broad first pass, then narrowing, then regressions only",
+  "rounds": [
+    { "level": "high" },
+    { "level": "medium" },
+    { "level": "low", "regressions_only": true }
+  ]
+}

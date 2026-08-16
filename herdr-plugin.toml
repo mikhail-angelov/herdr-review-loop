@@ -16,7 +16,7 @@ command = ["bash", "bin/run.sh", "review"]
 
 [[actions]]
 id = "pair"
-title = "Show review plan"
+title = "Show review pair"
 contexts = ["pane", "workspace"]
 command = ["bash", "bin/run.sh", "review", "--dry-run"]
 

@@ -45,6 +45,10 @@ func RenderMarkdown(document RoundDocument) string {
 	review := document.Review
 	switch review.Resolve() {
 	case Clean:
+		if len(review.Filtered) != 0 {
+			fmt.Fprintf(&out, "**clean** — nothing cleared the verdict bar; %d finding(s) were filtered.\n", len(review.Filtered))
+			break
+		}
 		out.WriteString("**clean** — the reviewer had nothing left to raise.\n")
 	case Blocked:
 		fmt.Fprintf(&out, "**blocked** — %d open question(s) for a human.\n", len(review.OpenQuestions))
@@ -57,6 +61,7 @@ func RenderMarkdown(document RoundDocument) string {
 		renderFinding(&out, finding, document.Decisions)
 	}
 	renderQuestions(&out, review.OpenQuestions)
+	renderFiltered(&out, review.Filtered)
 	renderPreExisting(&out, review.PreExisting)
 	renderTests(&out, document.Decisions)
 	return out.String()
@@ -101,6 +106,18 @@ func renderQuestions(out *strings.Builder, questions []OpenQuestion) {
 			fmt.Fprintf(out, "  (%s)", Finding{File: question.File, Line: question.Line}.Location())
 		}
 		out.WriteString("\n")
+	}
+}
+
+// renderFiltered keeps every withheld finding visible, so a bar set too high is legible in the run
+// that suffered from it rather than only in the setting that caused it.
+func renderFiltered(out *strings.Builder, findings []Finding) {
+	if len(findings) == 0 {
+		return
+	}
+	out.WriteString("\n## filtered\n\nBelow the run's minimum verdict, and not sent to the author.\n\n")
+	for _, finding := range findings {
+		fmt.Fprintf(out, "- %s · %s · %s — %s\n", finding.Verdict, finding.Severity, finding.Location(), finding.Title)
 	}
 }
 

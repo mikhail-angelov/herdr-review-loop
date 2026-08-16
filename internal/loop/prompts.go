@@ -50,30 +50,17 @@ const reviewRules = `- "file" is relative to the repository root. "line" 0 means
 // ReviewPrompt asks the reviewer for this round's findings. The loop does not describe what to look
 // for beyond the round's own narrowing: that taxonomy belongs to the reviewer and to the project's
 // CLAUDE.md or AGENTS.md, which the reviewer reads itself.
-func ReviewPrompt(round, maximum int, reviewPath string, settled []Settled) string {
+func ReviewPrompt(scope Scope, policy RoundPolicy, maximum int, reviewPath string, settled []Settled) string {
 	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "You are the reviewer in an automated review loop. This is round %d of %d, and your session was cleared beforehand.\n\n", round, maximum)
-	prompt.WriteString("Review the uncommitted changes in the working tree: read `git status --porcelain` and `git diff`, and read any untracked file they name in full.\n\n")
-	prompt.WriteString(roundPolicy(round) + "\n\n")
+	fmt.Fprintf(&prompt, "You are the reviewer in an automated review loop. This is round %d of %d, and your session was cleared beforehand.\n\n", policy.Number, maximum)
+	prompt.WriteString(scope.Review() + "\n\n")
+	prompt.WriteString(policy.Review() + "\n\n")
 	if block := settledBlock(settled); block != "" {
 		prompt.WriteString(block + "\n\n")
 	}
 	fmt.Fprintf(&prompt, "When the review is finished, write your findings to %s as a single JSON object of exactly this shape:\n\n%s\n\n%s\n\n", reviewPath, reviewSchema, reviewRules)
 	prompt.WriteString("Write nothing but that object to that file, and change no code — the file is your only output. Reply with just the path when you are done.")
 	return prompt.String()
-}
-
-// roundPolicy is the whole of what the loop still owns about how to review: this is round three
-// and we are only chasing regressions now. No one-shot review command has a notion of that.
-func roundPolicy(round int) string {
-	switch round {
-	case 1:
-		return "This is the broad first pass: report anything worth a look."
-	case 2:
-		return "Narrower pass: verify the previous round's fixes, then report what is left that you are confident about."
-	default:
-		return "Closure pass: report only what the previous rounds' fixes broke or left broken, and anything of high severity. Mark the former with \"regression\": true."
-	}
 }
 
 // settledBlock carries the decision journal forward. Rejected and deferred points arrive with the
@@ -99,28 +86,34 @@ func ReviewReformatPrompt(reviewPath, reason string) string {
 
 // FixPrompt asks the author to act on the findings and decide every one of them. The decision
 // record is the proof of work, and it is what the next round's reviewer is shown.
-func FixPrompt(round int, reviewPath, decisionsPath string, ids []string) string {
+func FixPrompt(scope Scope, policy RoundPolicy, reviewPath, decisionsPath string, ids []string) string {
+	return FixPromptWithInstruction(scope, policy, reviewPath, decisionsPath, ids, "")
+}
+
+// FixPromptWithInstruction adds the user's explicit one-shot choice to the normal author task.
+func FixPromptWithInstruction(scope Scope, policy RoundPolicy, reviewPath, decisionsPath string, ids []string, instruction string) string {
 	var prompt strings.Builder
-	fmt.Fprintf(&prompt, "You are the author in round %d of an automated review loop and have a fresh session.\n\n", round)
+	fmt.Fprintf(&prompt, "You are the author in round %d of an automated review loop and have a fresh session.\n\n", policy.Number)
 	fmt.Fprintf(&prompt, "Read %s. It holds this round's findings, each with an \"id\".\n\n", reviewPath)
-	prompt.WriteString(fixPolicy(round) + "\n\n")
+	if instruction != "" {
+		prompt.WriteString("User instruction for this one-shot review:\n" + instruction + "\n\n")
+	}
+	prompt.WriteString(scope.Author() + "\n\n")
+	prompt.WriteString(policy.Fix() + "\n\n")
 	fmt.Fprintf(&prompt, "Then write %s as a single JSON object of exactly this shape:\n\n%s\n\n", decisionsPath, decisionsSchema)
 	fmt.Fprintf(&prompt, "\"action\" is one of applied, rejected or deferred, each with a short note saying why. Decide every id exactly once: %s\n\n", strings.Join(ids, ", "))
 	fmt.Fprintf(&prompt, "Record in \"tests\" whether you ran the build and the test suite and what came of it. Do not edit %s.", reviewPath)
 	return prompt.String()
 }
 
-// fixPolicy narrows the same way roundPolicy does, so the author is not asked to make broad
-// changes in a round the reviewer is only closing out.
-func fixPolicy(round int) string {
-	switch round {
-	case 1:
-		return "Apply the findings you agree with. Do not make broad changes for a low-severity finding, or for a medium-severity one whose fix would substantially expand the change — reject or defer those instead."
-	case 2:
-		return "Apply remaining high-severity findings you agree with, and medium-severity ones whose fix is local. Reject or defer the rest."
-	default:
-		return "Apply only high-severity findings and regressions caused by the earlier fixes. Reject or defer everything else."
-	}
+// OneShotBriefPrompt has the author present the review to its user without starting fixes.
+func OneShotBriefPrompt(reviewPath string) string {
+	return fmt.Sprintf("A reviewer has completed one review pass. Read %s, then summarize its findings to the user in your reply. Do not edit code and do not start fixing anything yet. Tell the user that they can choose Apply, Cancel, or a custom instruction in the review-loop panel.", reviewPath)
+}
+
+// OneShotActionPrompt closes a clean one-shot review after the user has made a panel choice.
+func OneShotActionPrompt(choice OneShotChoice) string {
+	return fmt.Sprintf("The user selected %q for the completed one-shot review. %s Do not edit code unless the custom instruction explicitly asks you to. Acknowledge the selection, then stop; this one-shot review ends after this turn.", choice.Action, choice.Text)
 }
 
 // FixReformatPrompt is the author's half of ladder step 3.

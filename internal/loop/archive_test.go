@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
 )
 
 func TestArchiveKeepsPromptsOutputAndTheReportOfEachRound(t *testing.T) {
@@ -64,6 +66,35 @@ func TestArchiveWithoutRawOutputKeepsEverythingElse(t *testing.T) {
 	}
 }
 
+func TestArchiveKeepsRetryAndReformatTurnsSeparate(t *testing.T) {
+	state := t.TempDir()
+	archive := openArchive(t, state, "run")
+	for name, write := range map[string]func() error{
+		promptReview:                   func() error { return archive.Prompt(1, PhaseReview, "first prompt") },
+		"prompt-review-reformat-01.md": func() error { return archive.PromptAttempt(1, PhaseReview, 0, true, "reformat prompt") },
+		"prompt-review-retry-01.md":    func() error { return archive.PromptAttempt(1, PhaseReview, 1, false, "retry prompt") },
+		"review-reformat-01.raw.txt":   func() error { return archive.RawAttempt(1, PhaseReview, 0, true, "reformat answer") },
+		"review-retry-01.raw.txt":      func() error { return archive.RawAttempt(1, PhaseReview, 1, false, "retry answer") },
+	} {
+		if err := write(); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	round := filepath.Join(ArchiveDir(state, "run"), "round-01")
+	for name, want := range map[string]string{
+		promptReview:                   "first prompt",
+		"prompt-review-reformat-01.md": "reformat prompt",
+		"prompt-review-retry-01.md":    "retry prompt",
+		"review-reformat-01.raw.txt":   "reformat answer",
+		"review-retry-01.raw.txt":      "retry answer",
+	} {
+		data, err := os.ReadFile(filepath.Join(round, name))
+		if err != nil || string(data) != want {
+			t.Fatalf("%s = %q %v, want %q", name, data, err, want)
+		}
+	}
+}
+
 func TestReadEventsReturnsTheStreamInOrder(t *testing.T) {
 	state := t.TempDir()
 	archive := openArchive(t, state, "run")
@@ -107,6 +138,32 @@ func TestArchivedRoundsAreInOrder(t *testing.T) {
 	}
 }
 
+func TestPatchesConcatenateEveryEarlierRound(t *testing.T) {
+	archive := openArchive(t, t.TempDir(), "run")
+	if err := archive.Patch(1, "--- a/one.go\n+++ b/one.go\n"); err != nil {
+		t.Fatal(err)
+	}
+	// round 2 recorded nothing, which is what an interrupted author phase leaves behind
+	if err := archive.Patch(3, "--- a/three.go\n+++ b/three.go"); err != nil {
+		t.Fatal(err)
+	}
+	baseline := archive.Patches(4)
+	for _, want := range []string{"### round 1", "one.go", "### round 3", "three.go"} {
+		if !strings.Contains(baseline, want) {
+			t.Fatalf("baseline is missing %q:\n%s", want, baseline)
+		}
+	}
+	if strings.Contains(baseline, "### round 2") {
+		t.Fatalf("a round with no patch contributed a heading:\n%s", baseline)
+	}
+	if before := archive.Patches(1); before != "" {
+		t.Fatalf("round 1 has no baseline, got %q", before)
+	}
+	if strings.Contains(archive.Patches(3), "three.go") {
+		t.Fatal("the baseline reaches into the round it is for")
+	}
+}
+
 func TestRotateDropsTheOldestRunsWhole(t *testing.T) {
 	state := t.TempDir()
 	log := Log{StateDir: state}
@@ -138,7 +195,7 @@ func TestRotateIsHarmlessWithoutAHistoryDirectory(t *testing.T) {
 func TestManifestAndReportRoundTrip(t *testing.T) {
 	state := t.TempDir()
 	archive := openArchive(t, state, "run")
-	manifest := Manifest{Run: "run", Plugin: "0.1.0", Started: time.Now().UTC(), Scope: scopeWorktree, Rounds: []ManifestRound{{Round: 1, Command: "built-in review prompt", Level: "broad"}}}
+	manifest := Manifest{Run: "run", Plugin: "0.1.0", Started: time.Now().UTC(), Scope: config.ScopeWorktree, Rounds: []ManifestRound{{Round: 1, Command: "built-in review prompt", Level: "broad"}}}
 	if err := archive.WriteManifest(manifest); err != nil {
 		t.Fatal(err)
 	}

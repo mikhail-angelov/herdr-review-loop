@@ -123,3 +123,130 @@ Allow review-loop commands that inject text or report display metadata to succee
 
 - Tried using `Client.Call` for void commands; it rejected the empty successful response as invalid JSON.
 - Tried using `Client.Text` for void commands; it treated a JSON error envelope on successful stdout as ordinary text and swallowed the command failure.
+
+## 2026-08-16 — Archive every retry and reformat turn separately
+
+### Goal
+
+Keep a review run diagnosable when a phase needs a reformat turn or retry.
+
+### Golden path
+
+1. Store the first phase turn under the stable primary names, such as `prompt-review.md` and `review.raw.txt`.
+2. Store reformat and retry turns under unique, attempt-numbered names, preserving `.raw.txt` as one extension.
+3. Archive each raw response before issuing a reformat or resetting for a retry.
+
+### Verification
+
+`TestArchiveKeepsRetryAndReformatTurnsSeparate` and `TestRunSpendsOneReformatTurnOnGarbledOutput` pass. `golangci-lint run`, `go vet ./...`, `go test -race ./...`, and `make build` pass.
+
+### Failure pattern avoided
+
+Writing every turn to `prompt-review.md` or `review.raw.txt` overwrites evidence from a failed attempt, leaving an archive unable to explain why a later retry occurred.
+
+### Ruled-out approaches
+
+- Tried reusing the primary archive filenames for every attempt; later prompt and raw writes replaced earlier evidence.
+
+## 2026-08-16 — Configuration layers need one decoder and one non-default writer
+
+### Goal
+
+Resolve settings across built-in defaults, a profile, the user, the project and the invocation
+without a save from the settings pane destroying what only a file can express.
+
+### Golden path
+
+1. Decode every layer with one function into flattened dotted keys, so `config.json` and a profile
+   are the same file kind under different names.
+2. Merge per key, lowest layer first, recording the winning layer for each so `config` can print it.
+3. Replace arrays such as `rounds` whole; never merge them element-wise.
+4. Have the settings pane's `Save` read the existing file and overlay only the scalar keys it owns,
+   deleting the ones back at their default.
+
+### Verification
+
+`TestOneDecoderReadsBothFileKinds`, `TestAProjectProfileReplacesRoundsWhole`,
+`TestSaveKeepsStructuredSettingsThePaneCannotEdit` and `TestInitProducesAProjectLayerThatChangesNoBehavior`
+pass. `golangci-lint run`, `go vet ./...`, `go test -race ./...` and `make build` pass.
+
+### Failure pattern avoided
+
+`Save` rebuilding `config.json` from the pane's field list drops every key the pane cannot edit, so
+saving one timeout silently deletes a project's committed round policy.
+
+### Ruled-out approaches
+
+- Tried keeping `Values` comparable with `==` for the pane's dirty check; a map and a slice put the
+  struct out of reach of it, so the pane compares over the field list with `config.Same`.
+- Tried placing the profile above the user's `config.json`; a built-in default profile then
+  overrode settings the user had written by hand.
+
+## 2026-08-16 — A stall is a retry, a cancellation is not
+
+### Goal
+
+Catch an agent that goes silent within `timeouts.stall` rather than at the end of the phase budget,
+without turning an ordinary cancellation into a reported stall.
+
+### Golden path
+
+1. Run the prompt inside `WatchStall`, which polls the agent's state sequence and pane content and
+   cancels a derived context once neither has changed for the budget.
+2. Join the watcher before reporting, bounded by its own timeout.
+3. Report a stall only when the watchdog fired *and* the parent context is still alive; otherwise
+   return the original error, so cancellation and an exhausted phase budget stay what they are.
+4. Return the stall as a plain error, not a `context.Canceled`, so the phase's retry ladder treats
+   it as an attempt failure rather than a terminal one.
+
+### Verification
+
+`TestWatchStallFiresOnSilenceAndNotOnProgress` and
+`TestASilentAgentIsCaughtByTheStallBudgetNotThePhaseBudget` pass: a 30-minute phase with a
+150ms stall budget ends in under a second, having made `retries + 1` attempts.
+
+### Failure pattern avoided
+
+Letting the stall cancellation surface as `context.Canceled` makes `terminal(err)` true, so the run
+exits 4 as if the user had stopped it and no retry is ever attempted.
+
+## 2026-08-16 — Verify a CLI adapter against the shipped binary, not from memory
+
+### Goal
+
+Write the agent-kind → review-command table without a live pane to confirm each command in.
+
+### Golden path
+
+1. Confirm the installed versions first (`codex --version`, `claude --version`) and check them
+   against whatever the specification claims was verified.
+2. Read the command surface out of the shipped binary — `codex review --help` for the CLI form,
+   `strings` over the platform binary for the in-pane slash commands and their prompt templates.
+3. Encode only what the binary shows, and write down in the adapter comment the one detail that
+   still needs a person.
+4. Design the fallback so an unconfirmed detail degrades rather than breaks: an ignored instruction
+   argument still leaves the review running at the agent's own default scope.
+
+### Verification
+
+`codex review --help` names `--uncommitted`, `--base`, `--commit` and `[PROMPT]` with no level flag;
+the codex TUI binary lists `/review - review any changes and find issues` and the prompt template
+"Review the current code changes (staged, unstaged, and untracked files)"; the Claude Code binary
+carries `/code-review`, `/security-review`, and the rule that `ultra` is user-triggered and billed.
+`TestANativeReviewerRunsItsOwnCommandThenRecordsIt` covers codex, claude and a kind with no command.
+
+### Failure pattern avoided
+
+Both native commands render findings into the host UI rather than to a file, so an adapter that
+sends the command and then reads `review.json` finds nothing. The capture step is a second turn, not
+an option.
+
+A slash command also occupies its whole line, so a kind whose argument slot is already its level has
+nowhere to put the round's instructions — sending them appended to `/code-review high` would send
+the level and drop the instructions silently. Those kinds get a preamble turn instead.
+
+### Ruled-out approaches
+
+- Tried sending codex's instructions as a preamble turn like claude's; codex's `/review` runs in a
+  separate review thread, so the main thread's preceding turn is not reliably in its context. Its
+  instructions go in the command argument, which is what its CLI form documents.

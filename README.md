@@ -86,7 +86,8 @@ Then, from the pane of the agent that wrote the code:
    The archive under the plugin state directory stays.
 
 Not sure who would be paired? `review --dry-run` prints the pair, the scope, the profile
-and the per-round policy, and touches nothing.
+and the per-round policy, and touches nothing. `config` prints the same plus where every
+setting came from; `init` writes a `.review-loop/` this project can commit.
 
 For development instead of install:
 
@@ -103,7 +104,12 @@ make prep             # fmt + vet + lint + test — run before every commit
 | --- | --- |
 | `review` | Runs the reviewer → author → reviewer loop. Exits 0 only when the review is clean. |
 | `review --dry-run` | Prints the pair, scope, profile and round policy without taking a lock or writing files. |
+| `review --one-shot` | Runs one review, has the author present it, then waits for an Apply, Cancel or custom instruction from the panel before one author turn. It never re-reviews. |
+| `review --profile NAME` | Selects a round policy from `profiles/`, defaulting to `default`. |
+| `review --scope SPEC` | `worktree` (default), or `text:<path>` to review one document whole. |
 | `show [--run ID] [--round N] [--format md\|json]` | Renders an archived round — by default the last round of this repository's most recent run. |
+| `config` | Prints the resolved configuration with the winning layer per key, the round policy, the profiles and the pair. Runs nothing. |
+| `init` | Writes `.review-loop/` into this repository: a `config.json` holding only what you override, the profile you are using, and `config.example.md` documenting every key. Never overwrites what is already there. |
 | `stop` | Cancels the active loop from any pane. |
 | `finish` | Closes out a review: removes the run directory and closes the panel. |
 | `open-panel` / `open-settings` / `open-history` | Opens the corresponding pane. |
@@ -125,7 +131,11 @@ make prep             # fmt + vet + lint + test — run before every commit
 
 ```
 <repo>/.review-loop/              committed by the project, if it wants to
+├── config.json                   per-key override of your own settings
+├── config.example.md             what every key means, written by `init`
+├── profiles/<name>.json          round policies — drop one in and it is registered
 └── run/                          the active run — created 0700, hidden from git
+    ├── baseline.patch            earlier rounds' changes, for a regressions-only pass
     └── round-01/
         ├── review.json           the reviewer's findings, then the same with ids added
         └── decisions.json        what the author decided about each id
@@ -324,7 +334,9 @@ command = "herdr-review-loop.history"
 description = "review history"
 ```
 
-The panel uses `r` to start a review, `x` to cancel it, `f` to finish one, `h` for
+The panel uses `r` to start a review and `o` for a one-shot review. Once a one-shot review is
+shown by the author, the panel offers `a` to apply, `c` to cancel and `i` for a custom
+instruction; all three choices end the run after one author turn. It also uses `x` to cancel a loop, `f` to finish one, `h` for
 history, `s` for settings, and `q` to close. Settings use `j`/`k` or arrows to select,
 Enter to edit, `d` to restore a default, `s` to save, `x` to cancel the loop, and `q` to
 close. History uses `j`/`k` to move, Enter to open a run and then its findings, `d` and
@@ -334,41 +346,122 @@ in progress.
 
 ## Configuration
 
-Configuration is stored in Herdr's plugin config directory as `config.json`, and is
-editable from the settings pane. Durations use Go notation such as `30m` or `90s`.
+Nothing has to be configured. A repository with no `.review-loop/` and a user with no
+`config.json` get a complete run, without a warning.
+
+Settings come from four layers, and the highest one that names a key wins it:
+
+| # | Layer | Where |
+| --- | --- | --- |
+| 1 | built-in defaults | compiled into the binary |
+| 2 | selected profile | `profiles/<name>.json` in the highest layer that has that file |
+| 3 | user | Herdr's plugin config directory — what the settings pane edits |
+| 4 | project | `<repo>/.review-loop/config.json` |
+| 5 | invocation | `review --profile` / `--scope` |
+
+A setting you wrote by hand outranks one a profile happens to restate, which is why the
+profile sits below your own `config.json` rather than above it. `config` prints the winning
+layer for every key, so a surprising result is one command away from being explained.
+
+Durations use Go notation such as `30m` or `90s`.
 
 ```json
 {
+  "profile": "default",
+  "scope": "worktree",
   "reviewer": { "kind": "", "name": "" },
   "max_iterations": 10,
-  "timeouts": { "review": "30m", "fix": "30m" },
+  "min_verdict": "confirmed",
+  "timeouts": { "review": "30m", "fix": "30m", "stall": "5m" },
   "retries": 1,
   "archive": { "keep": 20, "raw_output": true },
-  "reset_command": ""
+  "review_command": {},
+  "reset_command": "",
+  "rounds": [{ "level": "high" }]
 }
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
+| `profile` | `default` | Round policy to run: a file under `profiles/`. |
+| `scope` | `worktree` | What is reviewed: the uncommitted changes, or `text:<path>` for one document whole. |
 | `reviewer.kind` | empty | Reviewer agent kind; empty chooses a different kind. |
 | `reviewer.name` | empty | Reviewer name or pane id; overrides `reviewer.kind`. |
 | `max_iterations` | `10` | Maximum review rounds. |
+| `min_verdict` | `confirmed` | Findings the reviewer marked `plausible` are recorded but never sent to the author. `plausible` passes everything. |
 | `timeouts.review` | `30m` | Budget for one review phase. |
 | `timeouts.fix` | `30m` | Budget for one author fix phase. |
+| `timeouts.stall` | `5m` | Silence from a pane that counts as a stalled agent, independent of the phase budget. |
 | `retries` | `1` | Repeat attempts per phase *after* the first, 0 to 5. |
 | `archive.keep` | `20` | How many finished runs keep their archive. Older ones are dropped whole at the start of a run. |
 | `archive.raw_output` | `true` | Keep each agent's verbatim output in the archive. Set to `false` and no `*.raw.txt` is written — including for a round that failed to parse. |
+| `review_command` | `{}` | Per-agent-kind review command, keyed by kind. Overrides the built-in table for any kind, known or not; an empty string returns that kind to the built-in prompt. |
 | `reset_command` | empty | Reset command for agent kinds without a built-in command. |
+| `rounds` | from the profile | The round policy. Replaced whole by the layer that defines it, never merged. |
 
-Invalid values and unknown keys are ignored with a warning; the loop uses the default
-instead. The settings pane validates values before saving them. `stop` has to work with a
-broken `config.json`, so a malformed setting is never a failure.
+Invalid values and unknown keys are ignored with a warning; the loop uses the layer below
+instead. The settings pane validates values before saving them, and leaves `rounds` and
+`review_command` alone — those are edited in a file. `stop` has to work with a broken
+`config.json`, so a malformed setting is never a failure.
 
 Archive size is bounded by `archive.keep` and by nothing else, and raw model output is the
 bulk of it. Those are the two dials.
 
 Reset commands are built in for `claude` and `gemini` (`/clear`) and for `codex` and
 `opencode` (`/new`). Set `reset_command` only for an agent kind that is not one of those.
+
+### Who decides what to look for
+
+The reviewer does. Where an agent ships its own review command, the loop runs that command and then
+asks it to record what it found as JSON — the native commands render findings into the pane, not to
+a file, so that second step is what makes them data.
+
+| Kind | Command | Level |
+| --- | --- | --- |
+| `codex` | `/review` | carried in the command's instructions; it has no level argument |
+| `claude` | `/code-review`, `/security-review` | the command's own argument: `low`/`medium` narrow and high-confidence, `high`/`max` broad |
+| others | built-in prompt | in the prompt — the only place a review taxonomy of ours remains |
+
+`ultra` is deliberately never used: it is multi-agent, billed and user-triggered, and fan-out is out
+of scope for this loop.
+
+The loop therefore carries no review taxonomy of its own. Your project's review standards belong in
+`CLAUDE.md` or `AGENTS.md`, where every review benefits from them and not only this one.
+
+Expect this table to break when an agent CLI moves — that is the price of delegating, and it is why
+a garbled turn costs one reformat rather than a round. `review_command` overrides any kind, and a
+kind whose adapter has rotted leaves `parse_fallback` events in `events.jsonl`, so the diagnosis is
+one `grep` over the archive.
+
+### Round policy
+
+A profile is a JSON file of the same keys, under a name, plus `rounds`:
+
+```json
+{
+  "description": "the default loop",
+  "rounds": [
+    { "level": "high" },
+    { "level": "medium" },
+    { "level": "low", "regressions_only": true }
+  ]
+}
+```
+
+The first entry is the broad first pass; **the last entry repeats for every round beyond the
+list**, so three entries cover a ten-round budget. A round may also carry `command`, to name
+a different review command for that round, and `instructions`, free text appended to what the
+reviewer is asked. `regressions_only` restricts a pass to what the earlier rounds' fixes broke
+or left broken, judged against `baseline.patch` — the concatenated diff of every prior author
+phase, which the loop writes into the run directory for the reviewer to read. On round 1 it has
+no baseline and is ignored with a warning.
+
+Dropping `.review-loop/profiles/release.json` in place is the entire registration procedure;
+`review --profile release` selects it.
+
+The round policy is a convenience, not a boundary. The same branch that edits a profile can
+redirect the review through `CLAUDE.md` or `AGENTS.md`, which the reviewer reads itself and
+no setting here can freeze — a diff that touches any of them deserves a human's eye.
 
 ## Troubleshooting
 

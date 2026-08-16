@@ -14,7 +14,7 @@ import (
 type PanelState struct {
 	Author, Reviewer, Phase, Message string
 	Events                           []string
-	Running                          bool
+	Running, OneShotPending          bool
 }
 
 // PanelView renders one frame of the panel into width columns and rows lines.
@@ -27,7 +27,7 @@ func PanelView(state PanelState, width, rows int) string {
 		status = "● running"
 	}
 	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
-	footer := append([]string{""}, panelHints(state.Running, width)...)
+	footer := append([]string{""}, panelHints(state, width)...)
 	tail := make([]string, 0, len(state.Events))
 	for _, line := range state.Events {
 		if width < 44 && strings.HasPrefix(line, "[") {
@@ -60,9 +60,11 @@ func PanelView(state PanelState, width, rows int) string {
 	return strings.Join(lines, "\n")
 }
 
-func panelHints(running bool, width int) []string {
-	hints := []string{"r review", "f finish", "h history", "s settings", "q close"}
-	if running {
+func panelHints(state PanelState, width int) []string {
+	hints := []string{"r review", "o one-shot", "f finish", "h history", "s settings", "q close"}
+	if state.OneShotPending {
+		hints = []string{"a apply", "c cancel", "i instruction", "x stop", "q close"}
+	} else if state.Running {
 		hints = []string{"x stop", "s settings", "q close"}
 	}
 	lines := []string{""}
@@ -88,8 +90,9 @@ func panelHints(running bool, width int) []string {
 // nothing left to show and exits, which ends its pane; on failure — a loop still
 // running — the reason stays on screen instead of vanishing with the pane.
 type PanelActions struct {
-	Review, Stop, Settings, History func() string
-	Finish                          func() (string, bool)
+	Review, OneShot, Stop, Settings, History, Apply, Cancel func() string
+	Custom                                                  func(string) string
+	Finish                                                  func() (string, bool)
 }
 
 // Panel keeps no mutable loop state: each refresh gets its display state from files
@@ -126,8 +129,12 @@ func Panel(in, out *os.File, refresh func() PanelState, actions PanelActions) er
 	signal.Notify(quit, syscall.SIGTERM)
 	defer signal.Stop(quit)
 	message := ""
+	custom, input := false, ""
 	for {
 		state := refresh()
+		if custom {
+			state.Message = "custom instruction: " + input + Invert(" ")
+		}
 		if message != "" {
 			state.Message = message
 		}
@@ -135,23 +142,10 @@ func Panel(in, out *os.File, refresh func() PanelState, actions PanelActions) er
 		terminal.Frame(PanelView(state, width, rows))
 		select {
 		case key := <-keys:
-			key = shortcut(key)
-			switch key {
-			case "q", "\x03", "esc":
+			var exitPanel bool
+			message, custom, input, exitPanel = panelKey(key, state, actions, message, custom, input)
+			if exitPanel {
 				return nil
-			case "r":
-				message = actions.Review()
-			case "x":
-				message = actions.Stop()
-			case "s":
-				message = actions.Settings()
-			case "h":
-				message = actions.History()
-			case "f":
-				finished := false
-				if message, finished = actions.Finish(); finished {
-					return nil
-				}
 			}
 		case <-quit:
 			return nil
@@ -159,4 +153,61 @@ func Panel(in, out *os.File, refresh func() PanelState, actions PanelActions) er
 		case <-resize:
 		}
 	}
+}
+
+func panelKey(key string, state PanelState, actions PanelActions, message string, custom bool, input string) (nextMessage string, nextCustom bool, nextInput string, exitPanel bool) {
+	if custom {
+		return customPanelKey(key, actions, message, input)
+	}
+	switch shortcut(key) {
+	case "q", "\x03", "esc":
+		return message, false, input, true
+	case "r":
+		return actions.Review(), false, input, false
+	case "o":
+		return actions.OneShot(), false, input, false
+	case "a":
+		if state.OneShotPending {
+			return actions.Apply(), false, input, false
+		}
+	case "c":
+		if state.OneShotPending {
+			return actions.Cancel(), false, input, false
+		}
+	case "i":
+		if state.OneShotPending {
+			return "", true, "", false
+		}
+	case "x":
+		return actions.Stop(), false, input, false
+	case "s":
+		return actions.Settings(), false, input, false
+	case "h":
+		return actions.History(), false, input, false
+	case "f":
+		result, finished := actions.Finish()
+		return result, false, input, finished
+	}
+	return message, false, input, false
+}
+
+func customPanelKey(key string, actions PanelActions, message, input string) (nextMessage string, nextCustom bool, nextInput string, exitPanel bool) {
+	switch key {
+	case "esc":
+		return "custom instruction canceled", false, "", false
+	case "\r", "\n":
+		if input != "" {
+			return actions.Custom(input), false, "", false
+		}
+	case "\x7f", "\b":
+		runes := []rune(input)
+		if len(runes) > 0 {
+			input = string(runes[:len(runes)-1])
+		}
+	default:
+		if len(key) == 1 && key[0] >= 32 {
+			input += key
+		}
+	}
+	return message, true, input, false
 }

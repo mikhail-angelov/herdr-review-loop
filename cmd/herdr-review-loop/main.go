@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,15 +33,17 @@ func main() {
 
 var errUsage = errors.New("usage error")
 
-const usage = "usage: herdr-review-loop <review [--dry-run]|show [--run ID] [--round N] [--format md|json]|stop|finish|open-panel|open-settings|open-history|panel|settings|history|version|help>"
+const usage = "usage: herdr-review-loop <review [--dry-run] [--one-shot] [--profile NAME] [--scope SPEC]|show [--run ID] [--round N] [--format md|json]|config|init|stop|finish|open-panel|open-settings|open-history|panel|settings|history|version|help>"
 
 // application is everything a command needs after the environment has been loaded, assembled once
-// so the command table below stays a table.
+// so the command table below stays a table. resolve is kept alongside the already-resolved values
+// because only `review` has an invocation layer, and it knows its own flags after dispatch.
 type application struct {
 	environment herdr.Environment
 	values      config.Values
 	client      herdr.Client
 	warnings    []string
+	resolve     func(invocation map[string]any) config.Resolution
 }
 
 // commands is the whole CLI surface. Dispatching through a table keeps each verb's behavior in one
@@ -48,6 +51,8 @@ type application struct {
 var commands = map[string]func(application, []string) error{
 	"review":        reviewCommand,
 	"show":          showCommand,
+	"config":        configCommand,
+	"init":          initCommand,
 	"stop":          stopCommand,
 	"finish":        finishCommand,
 	"settings":      settingsCommand,
@@ -85,36 +90,77 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	values, warnings := config.Load(environment.ConfigDir)
-	for _, warning := range warnings {
+	resolve := func(invocation map[string]any) config.Resolution {
+		return config.Resolve(config.Sources{User: environment.ConfigDir, Project: projectLayer(environment), Invocation: invocation})
+	}
+	resolution := resolve(nil)
+	for _, warning := range resolution.Warnings {
 		fmt.Fprintln(os.Stderr, "herdr-review-loop:", warning)
 	}
 	return command(application{
 		environment: environment,
-		values:      values,
+		values:      resolution.Values,
 		client:      herdr.NewClient(environment.Binary),
-		warnings:    warnings,
+		warnings:    resolution.Warnings,
+		resolve:     resolve,
 	}, rest)
 }
 
-func reviewCommand(app application, args []string) error {
-	dryRun := len(args) == 1 && args[0] == "--dry-run"
-	if len(args) != 0 && !dryRun {
-		return usageError()
+// projectLayer is the directory a project commits its review-loop configuration to. Outside a
+// workspace there is no project layer, which is not an error: the layers below it are complete.
+func projectLayer(environment herdr.Environment) string {
+	repository, err := environment.Repository()
+	if err != nil {
+		return ""
 	}
+	return filepath.Join(repository, loop.PluginDir)
+}
+
+func reviewCommand(app application, args []string) error {
+	dryRun, oneShot, invocation, err := reviewArguments(args)
+	if err != nil {
+		return err
+	}
+	resolution := app.resolve(invocation)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	log := loop.Log{StateDir: app.environment.StateDir, Output: os.Stdout}
 	if !dryRun {
-		for _, warning := range app.warnings {
+		for _, warning := range resolution.Warnings {
 			_ = log.Write(warning)
 		}
 	}
-	err := loop.Run{Client: app.client, Config: app.values, Environment: app.environment, Log: log, Version: version}.Execute(ctx, dryRun)
+	run := loop.Run{Client: app.client, Config: resolution.Values, Profile: resolution.Profile, Environment: app.environment, Log: log, Version: version, OneShot: oneShot}
+	err = run.Execute(ctx, dryRun)
 	if err != nil && !dryRun {
 		_ = log.Write(err.Error())
 	}
 	return err
+}
+
+// reviewArguments separates the two switches that change what the run does from the settings that
+// merely form the invocation layer, so a flag and the config.json key it overrides stay one thing.
+func reviewArguments(args []string) (dryRun, oneShot bool, invocation map[string]any, err error) {
+	invocation = map[string]any{}
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "--dry-run":
+			dryRun = true
+			continue
+		case "--one-shot":
+			oneShot = true
+			continue
+		case "--profile", "--scope":
+			if index+1 >= len(args) || args[index+1] == "" {
+				return false, false, nil, usageError()
+			}
+			invocation[strings.TrimPrefix(args[index], "--")] = args[index+1]
+			index++
+		default:
+			return false, false, nil, usageError()
+		}
+	}
+	return dryRun, oneShot, invocation, nil
 }
 
 // showCommand renders one archived round. It is the only way a run's findings become markdown, and
@@ -328,6 +374,12 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		held := loop.LiveRun(environment.StateDir)
 		feed := loop.LatestFeed(environment.StateDir, 200)
 		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: feed.Phase, Events: feed.Lines, Running: held}
+		if held {
+			repository, err := environment.Repository()
+			if err == nil {
+				_, state.OneShotPending = loop.PendingOneShot(environment.StateDir, environment.Context.WorkspaceID, repository)
+			}
+		}
 		if !held {
 			state.Phase = feed.Outcome
 		}
@@ -336,25 +388,47 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		pair.RUnlock()
 		return state
 	}
+	startReview := func(argument string) string {
+		executable, err := os.Executable()
+		if err != nil {
+			return err.Error()
+		}
+		// re-invoking this same binary, detached, so the loop outlives the panel
+		arguments := []string{"review"}
+		if argument != "" {
+			arguments = append(arguments, argument)
+		}
+		command := exec.Command(executable, arguments...) //nolint:gosec // the executable is this process
+		command.Stdin = nil
+		command.Stdout = nil
+		command.Stderr = nil
+		command.Env = append(os.Environ(), "HERDR_REVIEW_LOOP_AUTHOR="+environment.Context.FocusedPaneID)
+		command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := command.Start(); err != nil {
+			return err.Error()
+		}
+		go func() { _ = command.Wait() }()
+		if argument == "--one-shot" {
+			return "one-shot review started"
+		}
+		return "review started"
+	}
+	chooseOneShot := func(action, text string) string {
+		repository, err := environment.Repository()
+		if err != nil {
+			return err.Error()
+		}
+		if err := loop.ChooseOneShot(environment.StateDir, environment.Context.WorkspaceID, repository, action, text); err != nil {
+			return err.Error()
+		}
+		return "one-shot choice sent to the author"
+	}
 	return ui.Panel(os.Stdin, os.Stdout, refresh, ui.PanelActions{
-		Review: func() string {
-			executable, err := os.Executable()
-			if err != nil {
-				return err.Error()
-			}
-			// re-invoking this same binary, detached, so the loop outlives the panel
-			command := exec.Command(executable, "review") //nolint:gosec // the executable is this process
-			command.Stdin = nil
-			command.Stdout = nil
-			command.Stderr = nil
-			command.Env = append(os.Environ(), "HERDR_REVIEW_LOOP_AUTHOR="+environment.Context.FocusedPaneID)
-			command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			if err := command.Start(); err != nil {
-				return err.Error()
-			}
-			go func() { _ = command.Wait() }()
-			return "review started"
-		},
+		Review:  func() string { return startReview("") },
+		OneShot: func() string { return startReview("--one-shot") },
+		Apply:   func() string { return chooseOneShot(loop.OneShotApply, "") },
+		Cancel:  func() string { return chooseOneShot(loop.OneShotCancel, "") },
+		Custom:  func(text string) string { return chooseOneShot(loop.OneShotCustom, text) },
 		Stop: func() string {
 			if err := stopRun(client, environment); err != nil {
 				return err.Error()

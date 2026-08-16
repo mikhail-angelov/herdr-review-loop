@@ -9,7 +9,7 @@ import (
 
 func TestPanelViewClipsAndKeepsHints(t *testing.T) {
 	for _, width := range []int{32, 44, 80} {
-		view := PanelView(PanelState{Author: "claude @ w:p1", Reviewer: "codex @ w:p2", Tail: "a very long log line that must be clipped"}, width, 8)
+		view := PanelView(PanelState{Author: "claude @ w:p1", Reviewer: "codex @ w:p2", Events: []string{"a very long log line that must be clipped"}}, width, 8)
 		if !strings.Contains(view, "r review") || !strings.Contains(view, "q close") {
 			t.Fatalf("width %d: unexpected view %q", width, view)
 		}
@@ -21,7 +21,7 @@ func TestPanelViewClipsAndKeepsHints(t *testing.T) {
 
 func TestPanelViewFitsAvailableRowsWithoutWrapping(t *testing.T) {
 	view := PanelView(PanelState{
-		Tail:    "a log line that is deliberately much wider than the panel",
+		Events:  []string{"a log line that is deliberately much wider than the panel"},
 		Message: "a status message that is deliberately much wider than the panel",
 	}, 32, 8)
 	if got := len(strings.Split(view, "\n")); got > 8 {

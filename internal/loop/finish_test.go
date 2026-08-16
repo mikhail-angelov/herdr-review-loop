@@ -11,42 +11,68 @@ import (
 
 func writeRepoFile(t *testing.T, repository, name, contents string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(repository, name), []byte(contents), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repository, name), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestFinishArchivesDecisionsBeforeRemovingThem(t *testing.T) {
+// openArchive opens a run's archive or fails the test.
+func openArchive(t *testing.T, state, runID string) *Archive {
+	t.Helper()
+	archive, err := OpenArchive(state, runID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return archive
+}
+
+// archiveRound writes one round into a run's archive the way a run would, so tests that read the
+// archive back exercise the same layout the loop writes.
+func archiveRound(t *testing.T, state, runID string, round int, review Review, decisions Decisions) {
+	t.Helper()
+	archive := openArchive(t, state, runID)
+	if err := archive.Parsed(round, reviewFile, review); err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions.Decisions) > 0 || decisions.Tests.Outcome != "" {
+		if err := archive.Parsed(round, decisionsFile, decisions); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestFinishRemovesTheRunDirectoryAndReportsTheArchive(t *testing.T) {
 	state, repository := t.TempDir(), t.TempDir()
 	record := RunRecord{ID: "2026-08-09T10-00-00Z", Repository: repository, Author: "claude @ w:p1", Reviewer: "codex @ w:p2", Rounds: 2, Outcome: "clean", Started: time.Now().UTC()}
 	if err := (Log{StateDir: state}).WriteRun(record); err != nil {
 		t.Fatal(err)
 	}
-	decisions := "- applied: fixed the leak\n- rejected: too broad\n- deferred: needs a design\n- rejected: not a bug\ntests: go test ./... passed\n"
-	writeRepoFile(t, repository, "review.md", "STATUS: CLEAN\n")
-	writeRepoFile(t, repository, SummaryFile, decisions)
+	archive := openArchive(t, state, record.ID)
+	report := Report{Run: record.ID, Rounds: 2, Outcome: "clean after 2 round(s)", Findings: []ReportFinding{
+		{ID: "r01-1", Action: ActionApplied},
+		{ID: "r01-2", Action: ActionRejected},
+		{ID: "r01-3", Action: ActionMissing},
+	}}
+	if err := archive.WriteReport(report); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repository, RunSubdir, "round-01"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeRepoFile(t, repository, "code.go", "package main\n")
 
-	result, err := Finish(state, "workspace", repository, "review.md")
+	result, err := Finish(state, "workspace", repository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	archived, err := os.ReadFile(filepath.Join(RunDir(state, record.ID), summaryArchive))
-	if err != nil {
-		t.Fatalf("decisions were not archived: %v", err)
+	if _, err := os.Lstat(filepath.Join(repository, RunSubdir)); !os.IsNotExist(err) {
+		t.Fatalf("the run directory survived finish: %v", err)
 	}
-	if string(archived) != decisions {
-		t.Fatalf("archived decisions differ: %q", archived)
-	}
-	for _, name := range []string{"review.md", SummaryFile} {
-		if _, err := os.Lstat(filepath.Join(repository, name)); !os.IsNotExist(err) {
-			t.Fatalf("%s survived finish: %v", name, err)
-		}
-	}
-	if result.Stats.Applied != 1 || result.Stats.Rejected != 2 || result.Stats.Deferred != 1 {
-		t.Fatalf("unexpected counts: %+v", result.Stats)
+	if _, err := os.Lstat(filepath.Join(repository, "code.go")); err != nil {
+		t.Fatalf("finish deleted the author's work: %v", err)
 	}
 	digest := strings.Join(result.Digest(), "\n")
-	for _, want := range []string{"2 round(s)", "clean", "1 applied · 2 rejected · 1 deferred", "tests: go test ./... passed", "removed review.md, " + SummaryFile} {
+	for _, want := range []string{"2 round(s)", "clean", "1 applied · 1 rejected · 0 deferred · 1 missing", "archived to history/" + record.ID, "removed " + RunSubdir} {
 		if !strings.Contains(digest, want) {
 			t.Fatalf("digest missing %q: %s", want, digest)
 		}
@@ -60,59 +86,21 @@ func TestFinishRefusesWhileALoopHoldsTheLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = lock.Release() }()
-	writeRepoFile(t, repository, "review.md", "STATUS: FINDINGS\n")
+	if err := os.MkdirAll(filepath.Join(repository, RunSubdir), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
-	if _, err := Finish(state, "workspace", repository, "review.md"); err == nil {
+	if _, err := Finish(state, "workspace", repository); err == nil {
 		t.Fatal("finish deleted files underneath a running loop")
 	}
-	if _, err := os.Lstat(filepath.Join(repository, "review.md")); err != nil {
-		t.Fatalf("review file was removed despite the refusal: %v", err)
-	}
-}
-
-func TestFinishKeepsDecisionsWhenNoRunRecordExists(t *testing.T) {
-	state, repository := t.TempDir(), t.TempDir()
-	writeRepoFile(t, repository, SummaryFile, "- applied: something\n")
-
-	result, err := Finish(state, "workspace", repository, "review.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Archived || result.Run.ID == "" {
-		t.Fatalf("decisions were dropped instead of archived: %+v", result)
-	}
-	if _, err := os.ReadFile(filepath.Join(RunDir(state, result.Run.ID), summaryArchive)); err != nil {
-		t.Fatalf("orphan decisions were not archived: %v", err)
-	}
-}
-
-func TestFinishReportsTheRunWhenThereAreNoDecisions(t *testing.T) {
-	state, repository := t.TempDir(), t.TempDir()
-	// a run that came back clean on its first round: one review, no author phase.
-	record := RunRecord{ID: "2026-08-09T10-00-00-000000000Z", Repository: repository, Author: "claude", Reviewer: "codex", Rounds: 1, Outcome: "clean", Started: time.Now().UTC()}
-	if err := (Log{StateDir: state}).WriteRun(record); err != nil {
-		t.Fatal(err)
-	}
-	writeRepoFile(t, repository, "review.md", "STATUS: CLEAN\n")
-
-	result, err := Finish(state, "workspace", repository, "review.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Run.ID != record.ID {
-		t.Fatalf("finish did not report the run it cleaned up after: %+v", result.Run)
-	}
-	digest := strings.Join(result.Digest(), "\n")
-	for _, want := range []string{"1 round(s)", "clean", "removed review.md"} {
-		if !strings.Contains(digest, want) {
-			t.Fatalf("digest missing %q: %s", want, digest)
-		}
+	if _, err := os.Lstat(filepath.Join(repository, RunSubdir)); err != nil {
+		t.Fatalf("the run directory was removed despite the refusal: %v", err)
 	}
 }
 
 func TestFinishReportsNothingToDoOnACleanTree(t *testing.T) {
 	state, repository := t.TempDir(), t.TempDir()
-	result, err := Finish(state, "workspace", repository, "review.md")
+	result, err := Finish(state, "workspace", repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,14 +112,7 @@ func TestFinishReportsNothingToDoOnACleanTree(t *testing.T) {
 	}
 }
 
-func TestParseSummaryIgnoresAnUnmarkedRecord(t *testing.T) {
-	stats := ParseSummary("some prose\nanother line\n")
-	if stats.Decisions() != 0 || stats.Tests != "" {
-		t.Fatalf("unmarked record produced counts: %+v", stats)
-	}
-}
-
-func TestBrowsePairsVerdictsWithTheCheckpointsThatFollowThem(t *testing.T) {
+func TestBrowsePairsRoundsWithTheCheckpointsThatFollowThem(t *testing.T) {
 	state := t.TempDir()
 	repository := newRepository(t)
 	log := Log{StateDir: state}
@@ -139,12 +120,10 @@ func TestBrowsePairsVerdictsWithTheCheckpointsThatFollowThem(t *testing.T) {
 	if err := log.WriteRun(record); err != nil {
 		t.Fatal(err)
 	}
-	if err := log.Archive(record.ID, 1, "STATUS: FINDINGS\n- [high] a.go:1 — wrong — fix it\n- [low] b.go:2 — nit — maybe\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := log.Archive(record.ID, 2, "STATUS: CLEAN\n"); err != nil {
-		t.Fatal(err)
-	}
+	first := Review{Status: StatusFindings, Findings: []Finding{{File: "a.go", Line: 1, Title: "wrong"}, {File: "b.go", Line: 2, Title: "nit"}}}
+	first.Identify(1)
+	archiveRound(t, state, record.ID, 1, first, Decisions{Decisions: []Decision{{ID: "r01-1", Action: ActionApplied}, {ID: "r01-2", Action: ActionRejected}}})
+	archiveRound(t, state, record.ID, 2, Review{Status: StatusClean}, Decisions{})
 	// A baseline and one applied round: round 1 is diffable, round 2 is not.
 	checkpoints := Checkpoints{Repository: repository, RunID: record.ID, Enabled: true}
 	for _, round := range []int{0, 1} {
@@ -158,15 +137,15 @@ func TestBrowsePairsVerdictsWithTheCheckpointsThatFollowThem(t *testing.T) {
 	if len(views) != 1 || len(views[0].Rounds) != 2 {
 		t.Fatalf("unexpected history: %+v", views)
 	}
-	first, second := views[0].Rounds[0], views[0].Rounds[1]
-	if first.Findings != 2 || first.Clean {
-		t.Fatalf("round 1 was read wrong: %+v", first)
+	one, two := views[0].Rounds[0], views[0].Rounds[1]
+	if one.Findings != 2 || one.Clean || one.Applied != 1 {
+		t.Fatalf("round 1 was read wrong: %+v", one)
 	}
-	if !first.HasDiff() {
-		t.Fatalf("round 1 should have a diff: %+v", first)
+	if !one.HasDiff() {
+		t.Fatalf("round 1 should have a diff: %+v", one)
 	}
-	if !second.Clean || second.HasDiff() {
-		t.Fatalf("round 2 should be clean with no diff: %+v", second)
+	if !two.Clean || two.HasDiff() {
+		t.Fatalf("round 2 should be clean with no diff: %+v", two)
 	}
 	if views[0].Baseline() == "" || views[0].Last() == "" {
 		t.Fatalf("run diff endpoints are missing: %+v", views[0])
@@ -178,13 +157,10 @@ func TestBrowseSharesCheckpointLookupAcrossRunsInARepository(t *testing.T) {
 	repository := newRepository(t)
 	log := Log{StateDir: state}
 	for _, id := range []string{"2026-08-09T10-00-00Z", "2026-08-09T11-00-00Z"} {
-		record := RunRecord{ID: id, Repository: repository}
-		if err := log.WriteRun(record); err != nil {
+		if err := log.WriteRun(RunRecord{ID: id, Repository: repository}); err != nil {
 			t.Fatal(err)
 		}
-		if err := log.Archive(id, 1, "STATUS: CLEAN\n"); err != nil {
-			t.Fatal(err)
-		}
+		archiveRound(t, state, id, 1, Review{Status: StatusClean}, Decisions{})
 		checkpoints := Checkpoints{Repository: repository, RunID: id, Enabled: true}
 		for _, round := range []int{0, 1} {
 			writeRepoFile(t, repository, "tracked.txt", id+strconv.Itoa(round))

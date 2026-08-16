@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,19 +21,18 @@ import (
 
 var version = "0.1.0"
 
+// main maps a failure to the exit code the loop decided on. Every code but 2 is chosen where the
+// outcome is known; an error that names none is a tool error, which is also what a usage error is.
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		if errors.Is(err, errUsage) {
-			os.Exit(2)
-		}
-		os.Exit(1)
+		os.Exit(loop.ExitCode(err))
 	}
 }
 
 var errUsage = errors.New("usage error")
 
-const usage = "usage: herdr-review-loop <review [--dry-run]|stop|finish|open-panel|open-settings|open-history|panel|settings|history|version|help>"
+const usage = "usage: herdr-review-loop <review [--dry-run]|show [--run ID] [--round N] [--format md|json]|stop|finish|open-panel|open-settings|open-history|panel|settings|history|version|help>"
 
 // application is everything a command needs after the environment has been loaded, assembled once
 // so the command table below stays a table.
@@ -47,6 +47,7 @@ type application struct {
 // named function instead of one long switch.
 var commands = map[string]func(application, []string) error{
 	"review":        reviewCommand,
+	"show":          showCommand,
 	"stop":          stopCommand,
 	"finish":        finishCommand,
 	"settings":      settingsCommand,
@@ -109,11 +110,82 @@ func reviewCommand(app application, args []string) error {
 			_ = log.Write(warning)
 		}
 	}
-	err := loop.Run{Client: app.client, Config: app.values, Environment: app.environment, Log: log}.Execute(ctx, dryRun)
+	err := loop.Run{Client: app.client, Config: app.values, Environment: app.environment, Log: log, Version: version}.Execute(ctx, dryRun)
 	if err != nil && !dryRun {
 		_ = log.Write(err.Error())
 	}
 	return err
+}
+
+// showCommand renders one archived round. It is the only way a run's findings become markdown, and
+// the history pane calls the same renderer, so there is nothing to drift out of sync with.
+func showCommand(app application, args []string) error {
+	runID, round, format, err := showArguments(args)
+	if err != nil {
+		return err
+	}
+	if runID == "" {
+		repository, repoErr := app.environment.Repository()
+		if repoErr != nil {
+			return repoErr
+		}
+		record, found := loop.LatestRun(app.environment.StateDir, repository)
+		if !found {
+			return errors.New("no recorded runs for this repository")
+		}
+		runID = record.ID
+	}
+	rounds := loop.ArchivedRounds(app.environment.StateDir, runID)
+	if len(rounds) == 0 {
+		return fmt.Errorf("run %s has no archived rounds", runID)
+	}
+	if round == 0 {
+		round = rounds[len(rounds)-1]
+	}
+	document, found := loop.LoadRound(app.environment.StateDir, runID, round)
+	if !found {
+		return fmt.Errorf("run %s has no round %d", runID, round)
+	}
+	text := loop.RenderMarkdown(document)
+	if format == "json" {
+		if text, err = loop.RenderJSON(document); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stdout.WriteString(text); err != nil {
+		return fmt.Errorf("failed to write the rendered round: %w", err)
+	}
+	return nil
+}
+
+func showArguments(args []string) (runID string, round int, format string, err error) {
+	format = "md"
+	for index := 0; index < len(args); index++ {
+		value := ""
+		if index+1 < len(args) {
+			value = args[index+1]
+		}
+		switch args[index] {
+		case "--run":
+			runID = value
+		case "--round":
+			if round, err = strconv.Atoi(value); err != nil || round < 1 {
+				return "", 0, "", fmt.Errorf("--round expects a round number: %w", errUsage)
+			}
+		case "--format":
+			if value != "md" && value != "json" {
+				return "", 0, "", fmt.Errorf("--format expects md or json: %w", errUsage)
+			}
+			format = value
+		default:
+			return "", 0, "", usageError()
+		}
+		if value == "" {
+			return "", 0, "", usageError()
+		}
+		index++
+	}
+	return runID, round, format, nil
 }
 
 func stopCommand(app application, args []string) error {
@@ -127,7 +199,7 @@ func finishCommand(app application, args []string) error {
 	if len(args) != 0 {
 		return usageError()
 	}
-	lines, err := finishReview(app.environment, app.values)
+	lines, err := finishReview(app.environment)
 	if err != nil {
 		return err
 	}
@@ -212,7 +284,6 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		_ = client.PluginPaneFocus(context.Background(), existing.PaneID)
 		return nil
 	}
-	log := loop.Log{StateDir: environment.StateDir}
 	var pair struct {
 		sync.RWMutex
 		author, reviewer, message string
@@ -254,11 +325,11 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		}
 	}()
 	refresh := func() ui.PanelState {
-		tail, _ := log.Tail()
 		held := loop.LiveRun(environment.StateDir)
-		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: loop.Phase(tail), Tail: tail, Running: held}
+		feed := loop.LatestFeed(environment.StateDir, 200)
+		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: feed.Phase, Events: feed.Lines, Running: held}
 		if !held {
-			state.Phase = loop.LastOutcome(tail)
+			state.Phase = feed.Outcome
 		}
 		pair.RLock()
 		state.Author, state.Reviewer, state.Message = pair.author, pair.reviewer, pair.message
@@ -303,7 +374,7 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 			return "opened history"
 		},
 		Finish: func() (string, bool) {
-			lines, err := finishReview(environment, values)
+			lines, err := finishReview(environment)
 			if err != nil {
 				return err.Error(), false
 			}
@@ -315,20 +386,19 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 // finishReview cleans up and reports; it does not close the panel, because the
 // panel is one of its callers. Closing a pane can take its whole process group
 // with it, so the caller does that last, once nothing else is left to do.
-func finishReview(environment herdr.Environment, values config.Values) ([]string, error) {
+func finishReview(environment herdr.Environment) ([]string, error) {
 	repository, err := environment.Repository()
 	if err != nil {
 		return nil, err
 	}
-	result, err := loop.Finish(environment.StateDir, environment.Context.WorkspaceID, repository, values.ReviewFile)
+	result, err := loop.Finish(environment.StateDir, environment.Context.WorkspaceID, repository)
 	if err != nil {
 		return nil, err
 	}
-	lines := result.Digest()
 	if !result.Empty() {
-		_ = loop.Log{StateDir: environment.StateDir}.Write("finished: " + strings.Join(lines, "; "))
+		_ = loop.Log{StateDir: environment.StateDir}.Write("finished: " + result.Summarize())
 	}
-	return lines, nil
+	return result.Digest(), nil
 }
 
 func history(environment herdr.Environment) error {
@@ -350,11 +420,19 @@ func history(environment herdr.Environment) error {
 	}
 	return ui.History(os.Stdin, os.Stdout, runs, ui.HistoryActions{
 		Findings: func(run, round int) *exec.Cmd {
-			view, ok := historyRound(views, run, round)
+			runView, ok := historyRun(views, run)
 			if !ok {
 				return nil
 			}
-			return pager(view.Verdict)
+			roundView, ok := historyRound(views, run, round)
+			if !ok {
+				return nil
+			}
+			document, found := loop.LoadRound(environment.StateDir, runView.Record.ID, roundView.Number)
+			if !found {
+				return nil
+			}
+			return pager(loop.RenderMarkdown(document))
 		},
 		RoundDiff: func(run, round int) *exec.Cmd {
 			runView, ok := historyRun(views, run)
@@ -423,27 +501,23 @@ func runTitle(view loop.RunView) string {
 }
 
 func roundLabel(round loop.RoundView) string {
-	if round.Clean {
+	switch {
+	case round.Clean:
 		return fmt.Sprintf("round %d   clean", round.Number)
+	case round.Blocked:
+		return fmt.Sprintf("round %d   blocked on a question", round.Number)
+	default:
+		return fmt.Sprintf("round %d   %d finding(s) · %d applied", round.Number, round.Findings, round.Applied)
 	}
-	return fmt.Sprintf("round %d   %d finding(s)", round.Number, round.Findings)
 }
 
-// pager resolves the user's own pager so findings scroll and search the way
-// everything else on their terminal does. git picks its own for diffs.
-func pager(path string) *exec.Cmd {
-	if path == "" {
+// pager feeds rendered markdown to the user's own pager, so findings scroll and search the way
+// everything else on their terminal does. Nothing is written to disk to show it.
+func pager(text string) *exec.Cmd {
+	if text == "" {
 		return nil
 	}
-	command := os.Getenv("PAGER")
-	if command == "" {
-		if _, err := exec.LookPath("less"); err == nil {
-			command = "less -R"
-		} else {
-			command = "cat"
-		}
-	}
-	fields := strings.Fields(command)
+	fields := strings.Fields(os.Getenv("PAGER"))
 	if len(fields) == 0 {
 		if _, err := exec.LookPath("less"); err == nil {
 			fields = []string{"less", "-R"}
@@ -451,7 +525,9 @@ func pager(path string) *exec.Cmd {
 			fields = []string{"cat"}
 		}
 	}
-	return exec.Command(fields[0], append(fields[1:], path)...) //nolint:gosec // the user's own PAGER, run on their behalf
+	command := exec.Command(fields[0], fields[1:]...) //nolint:gosec // the user's own PAGER, run on their behalf
+	command.Stdin = strings.NewReader(text)
+	return command
 }
 
 func settingsStatus(stateDir string) string {

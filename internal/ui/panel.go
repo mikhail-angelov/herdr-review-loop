@@ -10,10 +10,11 @@ import (
 )
 
 // PanelState is everything the panel renders: who is paired with whom, what the loop is doing, and
-// the journal tail it scrolls.
+// the run's event stream it scrolls.
 type PanelState struct {
-	Author, Reviewer, Phase, Tail, Message string
-	Running                                bool
+	Author, Reviewer, Phase, Message string
+	Events                           []string
+	Running                          bool
 }
 
 // PanelView renders one frame of the panel into width columns and rows lines.
@@ -27,9 +28,8 @@ func PanelView(state PanelState, width, rows int) string {
 	}
 	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
 	footer := append([]string{""}, panelHints(state.Running, width)...)
-	tailLines := strings.Split(state.Tail, "\n")
-	tail := make([]string, 0, len(tailLines))
-	for _, line := range tailLines {
+	tail := make([]string, 0, len(state.Events))
+	for _, line := range state.Events {
 		if width < 44 && strings.HasPrefix(line, "[") {
 			if end := strings.Index(line, "] "); end >= 0 {
 				line = line[end+2:]

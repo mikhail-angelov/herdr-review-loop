@@ -52,13 +52,32 @@ func (c Checkpoints) Available(ctx context.Context) bool {
 	return err == nil && out == "true"
 }
 
-// Save records the current worktree as round's checkpoint and returns its
-// commit id. Round 0 is the baseline taken before the first fix, without which
-// there is nothing to compare the first round against.
-func (c Checkpoints) Save(ctx context.Context, round int) (string, error) {
+// Tree records the current worktree as a git tree object and returns its id, without touching the
+// user's index, stash or HEAD. `git add -A` honors info/exclude, so the run directory stays out of
+// it and a tree is exactly the author's changes.
+//
+// A plain `git diff` would omit every file the author newly created, and a new test is the most
+// common thing an author creates, so the fix that mattered most would be missing from the patch;
+// staging into a throwaway index is what includes them.
+func (c Checkpoints) Tree(ctx context.Context) (string, error) {
+	tree, _, err := c.tree(ctx)
+	return tree, err
+}
+
+// Diff is the patch between two trees, new files included.
+func (c Checkpoints) Diff(ctx context.Context, from, to string) (string, error) {
+	if from == "" || to == "" || from == to {
+		return "", nil
+	}
+	return c.git(ctx, nil, "diff", "--no-color", "--find-renames", from, to)
+}
+
+// tree stages the worktree into a temporary index and returns the tree it wrote, along with the
+// environment naming that index so a caller can keep using it.
+func (c Checkpoints) tree(ctx context.Context) (tree string, env []string, err error) {
 	index, err := os.CreateTemp("", "herdr-review-loop-index-*")
 	if err != nil {
-		return "", fmt.Errorf("failed to create temporary git index: %w", err)
+		return "", nil, fmt.Errorf("failed to create temporary git index: %w", err)
 	}
 	path := index.Name()
 	// git wants to create the index itself; an existing empty file is not a
@@ -66,15 +85,26 @@ func (c Checkpoints) Save(ctx context.Context, round int) (string, error) {
 	_ = index.Close()
 	_ = os.Remove(path)
 	defer func() { _ = os.Remove(path) }()
-	env := append(os.Environ(),
+	env = append(os.Environ(),
 		"GIT_INDEX_FILE="+filepath.Clean(path),
 		"GIT_AUTHOR_NAME=herdr-review-loop", "GIT_AUTHOR_EMAIL=herdr-review-loop@localhost",
 		"GIT_COMMITTER_NAME=herdr-review-loop", "GIT_COMMITTER_EMAIL=herdr-review-loop@localhost",
 	)
 	if _, addErr := c.git(ctx, env, "add", "-A"); addErr != nil {
-		return "", addErr
+		return "", nil, addErr
 	}
-	tree, err := c.git(ctx, env, "write-tree")
+	tree, err = c.git(ctx, env, "write-tree")
+	if err != nil {
+		return "", nil, err
+	}
+	return tree, env, nil
+}
+
+// Save records the current worktree as round's checkpoint and returns its
+// commit id. Round 0 is the baseline taken before the first fix, without which
+// there is nothing to compare the first round against.
+func (c Checkpoints) Save(ctx context.Context, round int) (string, error) {
+	tree, env, err := c.tree(ctx)
 	if err != nil {
 		return "", err
 	}

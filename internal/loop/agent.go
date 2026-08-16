@@ -23,6 +23,16 @@ type AgentClient interface {
 	PaneRead(context.Context, string) (string, error)
 }
 
+// ErrBlocked reports an agent waiting on a question only its human can answer. It is a sentinel
+// because the run has to tell it from every other failure — no retry can help, and it is the one
+// case that ends the run asking for a person rather than for a rerun.
+var ErrBlocked = errors.New("agent is blocked")
+
+// blocked turns a blocked agent into the error that carries ErrBlocked and names it.
+func blocked(agent herdr.Agent) error {
+	return fmt.Errorf("%w: %s; answer it, then run the loop again", ErrBlocked, herdr.Describe(agent))
+}
+
 func remaining(ctx context.Context) (time.Duration, error) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -45,7 +55,7 @@ func Settle(ctx context.Context, client AgentClient, agent herdr.Agent) (herdr.A
 	}
 	if current.Status == "blocked" {
 		_ = client.AgentFocus(ctx, herdr.Target(current))
-		return current, fmt.Errorf("%s is blocked; answer it, then run the loop again", herdr.Describe(current))
+		return current, blocked(current)
 	}
 	if current.Status != "working" {
 		return current, nil
@@ -60,7 +70,7 @@ func Settle(ctx context.Context, client AgentClient, agent herdr.Agent) (herdr.A
 	}
 	if current.Status == "blocked" {
 		_ = client.AgentFocus(ctx, herdr.Target(current))
-		return current, fmt.Errorf("%s is blocked; answer it, then run the loop again", herdr.Describe(current))
+		return current, blocked(current)
 	}
 	return current, nil
 }
@@ -81,7 +91,7 @@ func SubmitAndWait(ctx context.Context, client AgentClient, agent herdr.Agent, p
 	if err == nil {
 		if result.Status == "blocked" {
 			_ = client.AgentFocus(ctx, herdr.Target(result))
-			return result, fmt.Errorf("%s is blocked; answer it, then run the loop again", herdr.Describe(result))
+			return result, blocked(result)
 		}
 		return result, nil
 	}
@@ -115,7 +125,7 @@ func waitAfterPrompt(ctx context.Context, client AgentClient, agent herdr.Agent,
 	result, err := client.AgentWait(ctx, herdr.Target(agent), budget)
 	if err == nil && result.Status == "blocked" {
 		_ = client.AgentFocus(ctx, herdr.Target(result))
-		return result, fmt.Errorf("%s is blocked; answer it, then run the loop again", herdr.Describe(result))
+		return result, blocked(result)
 	}
 	return result, err
 }

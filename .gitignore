@@ -9,8 +9,6 @@ run.lock.json
 herdr-review-loop.log
 history/
 panel.*.json
-review.md
-review-summary.md
 .idea/
 .vscode/
 .DS_Store

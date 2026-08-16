@@ -11,20 +11,37 @@ import (
 	"time"
 )
 
-// Values is the effective configuration: file settings merged over the defaults.
+// Reviewer selects the second agent: by name when one is given, otherwise by kind.
+type Reviewer struct{ Kind, Name string }
+
+// Timeouts are the per-phase budgets a round is allowed to spend.
+type Timeouts struct{ Review, Fix time.Duration }
+
+// Archive bounds what finished runs leave behind in the plugin state directory.
+type Archive struct {
+	Keep      int
+	RawOutput bool
+}
+
+// Values is the effective configuration: file settings merged over the defaults. Every field is
+// comparable, which is what lets the settings pane tell an edited copy from the one it loaded.
 type Values struct {
-	ReviewerKind  string
-	ReviewerName  string
+	Reviewer      Reviewer
 	MaxIterations int
-	ReviewFile    string
-	ReviewTimeout time.Duration
-	FixTimeout    time.Duration
+	Timeouts      Timeouts
+	Retries       int
+	Archive       Archive
 	ResetCommand  string
 }
 
 // Defaults are the settings used when config.json is absent or a setting is unreadable.
 func Defaults() Values {
-	return Values{MaxIterations: 10, ReviewFile: "review.md", ReviewTimeout: 30 * time.Minute, FixTimeout: 30 * time.Minute}
+	return Values{
+		MaxIterations: 10,
+		Timeouts:      Timeouts{Review: 30 * time.Minute, Fix: 30 * time.Minute},
+		Retries:       1,
+		Archive:       Archive{Keep: 20, RawOutput: true},
+	}
 }
 
 // Field describes one setting for the settings pane: its key, how to label it and how to read it.
@@ -33,18 +50,25 @@ type Field struct {
 	Kind             string
 }
 
-// Fields lists every setting, in the order the settings pane shows them.
+// Fields lists every setting, in the order the settings pane shows them. A key containing a dot
+// names a member of the nested object of the same name in config.json.
 func Fields() []Field {
 	return []Field{
-		{"reviewer_kind", "reviewer kind", "agent kind that reviews; empty uses another kind", "optional"},
-		{"reviewer_name", "reviewer name", "agent name or pane id; wins over reviewer kind", "optional"},
+		{"reviewer.kind", "reviewer kind", "agent kind that reviews; empty uses another kind", "optional"},
+		{"reviewer.name", "reviewer name", "agent name or pane id; wins over reviewer kind", "optional"},
 		{"max_iterations", "max iterations", "review/apply rounds before giving up", "count"},
-		{"review_file", "review file", "reviewer output, relative to the repository", "path"},
-		{"review_timeout", "review timeout", "budget for one review round", "duration"},
-		{"fix_timeout", "fix timeout", "budget for applying a review", "duration"},
+		{"timeouts.review", "review timeout", "budget for one review round", "duration"},
+		{"timeouts.fix", "fix timeout", "budget for applying a review", "duration"},
+		{"retries", "retries", "repeat attempts per phase after the first, 0 to 5", "count"},
+		{"archive.keep", "archive keep", "how many finished runs keep their archive", "count"},
+		{"archive.raw_output", "archive raw output", "keep verbatim agent output in the archive", "bool"},
 		{"reset_command", "reset command", "fallback reset command for unknown agent kinds", "optional"},
 	}
 }
+
+// groups are the nested objects config.json carries, so a dotted field key and a JSON object stay
+// two views of one setting rather than two settings.
+var groups = []string{"reviewer", "timeouts", "archive"}
 
 // Path is the config file inside the plugin's config directory.
 func Path(dir string) string { return filepath.Join(dir, "config.json") }
@@ -60,7 +84,7 @@ func Load(dir string) (values Values, warnings []string) {
 	if err != nil {
 		return values, []string{fmt.Sprintf("cannot read config.json: %v, using defaults", err)}
 	}
-	var raw map[string]json.RawMessage
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
 		return values, []string{"config.json is not a JSON object of settings, using defaults"}
 	}
@@ -68,15 +92,9 @@ func Load(dir string) (values Values, warnings []string) {
 	for _, field := range Fields() {
 		known[field.Key] = true
 	}
-	for key := range raw {
+	for key, value := range flatten(raw) {
 		if !known[key] {
 			warnings = append(warnings, key+" is not a herdr-review-loop setting, ignoring it")
-		}
-	}
-	for key, encoded := range raw {
-		var value any
-		if err := json.Unmarshal(encoded, &value); err != nil {
-			warnings = append(warnings, key+": invalid JSON, using default")
 			continue
 		}
 		if err := setJSON(&values, key, value); err != nil {
@@ -86,30 +104,36 @@ func Load(dir string) (values Values, warnings []string) {
 	return values, warnings
 }
 
+// flatten turns the nested file into the dotted keys Fields names. A group whose value is not an
+// object is reported under its own name so the warning points at what the user actually wrote.
+func flatten(raw map[string]any) map[string]any {
+	nested := map[string]bool{}
+	for _, group := range groups {
+		nested[group] = true
+	}
+	flat := make(map[string]any, len(raw))
+	for key, value := range raw {
+		members, isObject := value.(map[string]any)
+		if !nested[key] || !isObject {
+			flat[key] = value
+			continue
+		}
+		for member, memberValue := range members {
+			flat[key+"."+member] = memberValue
+		}
+	}
+	return flat
+}
+
 // Save writes the settings that differ from the defaults, atomically, and returns the file path.
 func Save(dir string, values Values) (string, error) {
 	defaults := Defaults()
 	stored := map[string]any{}
-	if values.ReviewerKind != defaults.ReviewerKind {
-		stored["reviewer_kind"] = values.ReviewerKind
-	}
-	if values.ReviewerName != defaults.ReviewerName {
-		stored["reviewer_name"] = values.ReviewerName
-	}
-	if values.MaxIterations != defaults.MaxIterations {
-		stored["max_iterations"] = values.MaxIterations
-	}
-	if values.ReviewFile != defaults.ReviewFile {
-		stored["review_file"] = values.ReviewFile
-	}
-	if values.ReviewTimeout != defaults.ReviewTimeout {
-		stored["review_timeout"] = values.ReviewTimeout.String()
-	}
-	if values.FixTimeout != defaults.FixTimeout {
-		stored["fix_timeout"] = values.FixTimeout.String()
-	}
-	if values.ResetCommand != defaults.ResetCommand {
-		stored["reset_command"] = values.ResetCommand
+	for _, field := range Fields() {
+		if Show(field.Key, values) == Show(field.Key, defaults) {
+			continue
+		}
+		store(stored, field.Key, encode(field.Key, values))
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("failed to create config directory %s: %w", dir, err)
@@ -139,24 +163,59 @@ func Save(dir string, values Values) (string, error) {
 	return Path(dir), nil
 }
 
+// store places one dotted key into the nested shape config.json is written in.
+func store(stored map[string]any, key string, value any) {
+	group, member, nested := strings.Cut(key, ".")
+	if !nested {
+		stored[key] = value
+		return
+	}
+	members, ok := stored[group].(map[string]any)
+	if !ok {
+		members = map[string]any{}
+		stored[group] = members
+	}
+	members[member] = value
+}
+
+// encode is how a setting is written to disk, which is not always how it is held in memory:
+// durations are stored as the text a human types.
+func encode(key string, values Values) any {
+	switch key {
+	case "timeouts.review", "timeouts.fix":
+		return Show(key, values)
+	case "max_iterations":
+		return values.MaxIterations
+	case "retries":
+		return values.Retries
+	case "archive.keep":
+		return values.Archive.Keep
+	case "archive.raw_output":
+		return values.Archive.RawOutput
+	default:
+		return Show(key, values)
+	}
+}
+
 // Parse turns one setting typed in the settings pane into its stored representation.
 func Parse(key, text string) (any, error) {
 	text = strings.TrimSpace(text)
 	switch key {
-	case "reviewer_kind", "reviewer_name", "reset_command":
+	case "reviewer.kind", "reviewer.name", "reset_command":
 		return text, nil
-	case "review_file":
-		return validatePath(text)
 	case "max_iterations":
-		n, err := strconv.Atoi(text)
+		return wholeNumber(text, 1, 1000)
+	case "retries":
+		return wholeNumber(text, 0, 5)
+	case "archive.keep":
+		return wholeNumber(text, 1, 1000)
+	case "archive.raw_output":
+		value, err := strconv.ParseBool(text)
 		if err != nil {
-			return nil, fmt.Errorf("expected a whole number")
+			return nil, fmt.Errorf("expected true or false")
 		}
-		if n < 1 || n > 1000 {
-			return nil, fmt.Errorf("must be a whole number from 1 to 1000")
-		}
-		return n, nil
-	case "review_timeout", "fix_timeout":
+		return value, nil
+	case "timeouts.review", "timeouts.fix":
 		d, err := time.ParseDuration(text)
 		if err != nil || d <= 0 {
 			return nil, fmt.Errorf("expected a positive duration such as 30m")
@@ -171,18 +230,22 @@ func Parse(key, text string) (any, error) {
 // the file loader share one representation of every setting.
 func Apply(values *Values, key string, value any) error {
 	switch key {
-	case "reviewer_kind":
-		values.ReviewerKind = value.(string)
-	case "reviewer_name":
-		values.ReviewerName = value.(string)
+	case "reviewer.kind":
+		values.Reviewer.Kind = value.(string)
+	case "reviewer.name":
+		values.Reviewer.Name = value.(string)
 	case "max_iterations":
 		values.MaxIterations = value.(int)
-	case "review_file":
-		values.ReviewFile = value.(string)
-	case "review_timeout":
-		values.ReviewTimeout = value.(time.Duration)
-	case "fix_timeout":
-		values.FixTimeout = value.(time.Duration)
+	case "timeouts.review":
+		values.Timeouts.Review = value.(time.Duration)
+	case "timeouts.fix":
+		values.Timeouts.Fix = value.(time.Duration)
+	case "retries":
+		values.Retries = value.(int)
+	case "archive.keep":
+		values.Archive.Keep = value.(int)
+	case "archive.raw_output":
+		values.Archive.RawOutput = value.(bool)
 	case "reset_command":
 		values.ResetCommand = value.(string)
 	default:
@@ -194,23 +257,38 @@ func Apply(values *Values, key string, value any) error {
 // Show renders one setting for display, the inverse of Parse.
 func Show(key string, values Values) string {
 	switch key {
-	case "reviewer_kind":
-		return values.ReviewerKind
-	case "reviewer_name":
-		return values.ReviewerName
+	case "reviewer.kind":
+		return values.Reviewer.Kind
+	case "reviewer.name":
+		return values.Reviewer.Name
 	case "max_iterations":
 		return strconv.Itoa(values.MaxIterations)
-	case "review_file":
-		return values.ReviewFile
-	case "review_timeout":
-		return showDuration(values.ReviewTimeout)
-	case "fix_timeout":
-		return showDuration(values.FixTimeout)
+	case "timeouts.review":
+		return showDuration(values.Timeouts.Review)
+	case "timeouts.fix":
+		return showDuration(values.Timeouts.Fix)
+	case "retries":
+		return strconv.Itoa(values.Retries)
+	case "archive.keep":
+		return strconv.Itoa(values.Archive.Keep)
+	case "archive.raw_output":
+		return strconv.FormatBool(values.Archive.RawOutput)
 	case "reset_command":
 		return values.ResetCommand
 	default:
 		return ""
 	}
+}
+
+func wholeNumber(text string, low, high int) (any, error) {
+	n, err := strconv.Atoi(text)
+	if err != nil {
+		return nil, fmt.Errorf("expected a whole number")
+	}
+	if n < low || n > high {
+		return nil, fmt.Errorf("must be a whole number from %d to %d", low, high)
+	}
+	return n, nil
 }
 
 func showDuration(value time.Duration) string {
@@ -224,36 +302,35 @@ func showDuration(value time.Duration) string {
 	return text
 }
 
+// setJSON applies one decoded JSON value, rejecting the ones whose type cannot carry the setting.
 func setJSON(values *Values, key string, value any) error {
 	switch key {
-	case "reviewer_kind", "reviewer_name", "reset_command":
+	case "reviewer.kind", "reviewer.name", "reset_command":
 		if value == nil {
-			return setString(values, key, "")
+			return Apply(values, key, "")
 		}
 		text, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("must be text")
 		}
-		return setString(values, key, strings.TrimSpace(text))
-	case "review_file":
-		text, ok := value.(string)
-		if !ok {
-			return fmt.Errorf("must be text")
+		return Apply(values, key, strings.TrimSpace(text))
+	case "max_iterations", "retries", "archive.keep":
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) {
+			return fmt.Errorf("must be a whole number")
 		}
-		valid, err := validatePath(text)
+		parsed, err := Parse(key, strconv.Itoa(int(number)))
 		if err != nil {
 			return err
 		}
-		values.ReviewFile = valid.(string)
-		return nil
-	case "max_iterations":
-		number, ok := value.(float64)
-		if !ok || number != float64(int(number)) || number < 1 || number > 1000 {
-			return fmt.Errorf("must be a whole number from 1 to 1000")
+		return Apply(values, key, parsed)
+	case "archive.raw_output":
+		flag, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("must be true or false")
 		}
-		values.MaxIterations = int(number)
-		return nil
-	case "review_timeout", "fix_timeout":
+		return Apply(values, key, flag)
+	case "timeouts.review", "timeouts.fix":
 		text, ok := value.(string)
 		if !ok {
 			return fmt.Errorf("must be a duration string")
@@ -262,37 +339,8 @@ func setJSON(values *Values, key string, value any) error {
 		if err != nil {
 			return err
 		}
-		if key == "review_timeout" {
-			values.ReviewTimeout = parsed.(time.Duration)
-		} else {
-			values.FixTimeout = parsed.(time.Duration)
-		}
-		return nil
+		return Apply(values, key, parsed)
 	default:
-		return nil
+		return fmt.Errorf("unknown setting")
 	}
-}
-
-func setString(values *Values, key, text string) error {
-	switch key {
-	case "reviewer_kind":
-		values.ReviewerKind = text
-	case "reviewer_name":
-		values.ReviewerName = text
-	case "reset_command":
-		values.ResetCommand = text
-	}
-	return nil
-}
-
-func validatePath(text string) (any, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil, fmt.Errorf("must not be empty")
-	}
-	clean := filepath.Clean(text)
-	if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.HasSuffix(text, string(filepath.Separator)) {
-		return nil, fmt.Errorf("must name a file inside the repository")
-	}
-	return clean, nil
 }

@@ -55,17 +55,17 @@ func PickReviewer(cfg config.Values, agents []Agent, author Agent, note func(str
 			candidates = append(candidates, agent)
 		}
 	}
-	if cfg.ReviewerName != "" {
+	if cfg.Reviewer.Name != "" {
 		for _, agent := range candidates {
-			if agent.Name == cfg.ReviewerName || agent.PaneID == cfg.ReviewerName {
+			if agent.Name == cfg.Reviewer.Name || agent.PaneID == cfg.Reviewer.Name {
 				return agent, nil
 			}
 		}
-		return Agent{}, fmt.Errorf("no agent %q in workspace %s", cfg.ReviewerName, author.WorkspaceID)
+		return Agent{}, fmt.Errorf("no agent %q in workspace %s", cfg.Reviewer.Name, author.WorkspaceID)
 	}
 	var matches []Agent
 	for _, agent := range candidates {
-		if cfg.ReviewerKind != "" && agent.Kind == cfg.ReviewerKind || cfg.ReviewerKind == "" && agent.Kind != "" && agent.Kind != author.Kind {
+		if cfg.Reviewer.Kind != "" && agent.Kind == cfg.Reviewer.Kind || cfg.Reviewer.Kind == "" && agent.Kind != "" && agent.Kind != author.Kind {
 			matches = append(matches, agent)
 		}
 	}

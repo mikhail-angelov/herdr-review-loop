@@ -174,7 +174,11 @@ func History(in, out *os.File, runs []HistoryRun, actions HistoryActions) error 
 		}
 		message = ""
 		if err := terminal.Suspend(func() error {
-			command.Stdin, command.Stdout, command.Stderr = in, out, os.Stderr
+			// a command that already has stdin is being fed rendered text, not a file to open
+			if command.Stdin == nil {
+				command.Stdin = in
+			}
+			command.Stdout, command.Stderr = out, os.Stderr
 			return command.Run()
 		}); err != nil {
 			message = err.Error()

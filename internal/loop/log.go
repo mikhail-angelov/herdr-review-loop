@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -57,45 +56,51 @@ func (l Log) Tail() (string, error) {
 	return string(data), nil
 }
 
-// Archive keeps one round's findings under the run's history directory, so a finished run can be
-// re-read after the journal has rolled past it.
-func (l Log) Archive(runID string, iteration int, contents string) error {
-	dir := filepath.Join(l.StateDir, "history", runID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("failed to create history directory %s: %w", dir, err)
-	}
-	path := filepath.Join(dir, fmt.Sprintf("iteration-%02d.md", iteration))
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", path, err)
-	}
-	return nil
+// Feed is what the panel renders: the newest run's event stream, its current phase, and the
+// outcome of the last run that finished. It comes from the archive rather than from the journal,
+// so stall and retry lines arrive as events instead of being recovered from prose.
+type Feed struct {
+	Phase   string
+	Outcome string
+	Lines   []string
 }
 
-// Phase reads the current round and activity out of the journal tail, for the panel's status line.
-func Phase(log string) string {
-	var phase string
-	for _, line := range strings.Split(log, "\n") {
-		if index := strings.Index(line, "--- iteration "); index >= 0 {
-			iteration := strings.TrimPrefix(strings.SplitN(line[index:], ":", 2)[0], "--- iteration ")
-			if strings.Contains(line[index:], ": review") {
-				phase = iteration + " reviewing"
-			}
-			if strings.Contains(line[index:], ": apply") {
-				phase = iteration + " applying"
-			}
+// LatestFeed builds the panel's view of the newest recorded run. A state directory with no runs
+// yet produces an empty feed rather than an error: there is nothing wrong, there is just nothing.
+func LatestFeed(stateDir string, limit int) Feed {
+	runs := ListRuns(stateDir)
+	if len(runs) == 0 {
+		return Feed{}
+	}
+	record := runs[0]
+	feed := Feed{Outcome: record.Outcome}
+	if feed.Outcome == "running" {
+		feed.Outcome = ""
+	}
+	events := ReadEvents(ArchiveDir(stateDir, record.ID))
+	for _, event := range events {
+		if event.Event == EventPhaseStart {
+			feed.Phase = fmt.Sprintf("round %d %s", event.Round, event.Phase)
+		}
+		if event.Event == EventPhaseDone {
+			feed.Phase = ""
 		}
 	}
-	return phase
+	if limit > 0 && len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+	for _, event := range events {
+		feed.Lines = append(feed.Lines, FormatEvent(event))
+	}
+	return feed
 }
 
-// LastOutcome finds the line describing how the most recent run ended.
-func LastOutcome(log string) string {
-	lines := strings.Split(strings.TrimSpace(log), "\n")
-	for index := len(lines) - 1; index >= 0; index-- {
-		line := lines[index]
-		if strings.Contains(line, "clean after") || strings.Contains(line, "stopped after") || strings.Contains(line, "canceled") {
-			return line
-		}
+// FormatEvent renders one event for the panel. The leading timestamp is what a narrow pane drops
+// first, so it stays a fixed-width prefix.
+func FormatEvent(event Event) string {
+	line := fmt.Sprintf("[%s] round %d %s: %s", event.TS.Local().Format("15:04:05"), event.Round, event.Phase, event.Event)
+	if event.Detail != "" {
+		line += " — " + event.Detail
 	}
-	return ""
+	return line
 }

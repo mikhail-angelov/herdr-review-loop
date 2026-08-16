@@ -33,14 +33,33 @@ func TestHistoryRoundRejectsMissingRounds(t *testing.T) {
 	}
 }
 
-func TestPagerFallsBackWhenPagerIsWhitespace(t *testing.T) {
+func TestPagerFeedsRenderedTextAndFallsBackWhenPagerIsWhitespace(t *testing.T) {
 	t.Setenv("PAGER", " \t ")
-	command := pager("review.md")
-	if command == nil || len(command.Args) == 0 || command.Args[len(command.Args)-1] != "review.md" {
-		t.Fatalf("pager(%q) = %#v", "review.md", command)
+	command := pager("# run · round 1\n")
+	if command == nil || command.Path == "" {
+		t.Fatalf("pager returned %#v", command)
 	}
-	if command.Path == "" {
-		t.Fatal("pager command is empty")
+	if command.Stdin == nil {
+		t.Fatal("the pager was given no text to show")
+	}
+	if pager("") != nil {
+		t.Fatal("an empty round produced a pager command")
+	}
+}
+
+func TestShowArgumentsDefaultsToTheLastRoundInMarkdown(t *testing.T) {
+	runID, round, format, err := showArguments(nil)
+	if err != nil || runID != "" || round != 0 || format != "md" {
+		t.Fatalf("showArguments(nil) = %q %d %q %v", runID, round, format, err)
+	}
+	runID, round, format, err = showArguments([]string{"--run", "r", "--round", "2", "--format", "json"})
+	if err != nil || runID != "r" || round != 2 || format != "json" {
+		t.Fatalf("showArguments = %q %d %q %v", runID, round, format, err)
+	}
+	for _, args := range [][]string{{"--round", "0"}, {"--format", "html"}, {"--run"}, {"--nope", "x"}} {
+		if _, _, _, err := showArguments(args); !errors.Is(err, errUsage) {
+			t.Errorf("showArguments(%q) = %v, want a usage error", args, err)
+		}
 	}
 }
 

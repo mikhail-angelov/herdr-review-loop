@@ -7,15 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// RunRecord describes one review run. It lives beside that run's archived
-// verdicts so history survives the working tree it was produced from: the
-// repository path is recorded because the state directory is shared by every
-// repository the plugin has ever run in.
+// RunRecord describes one review run. It lives beside that run's archive so history survives the
+// working tree it was produced from: the repository path is recorded because the state directory is
+// shared by every repository the plugin has ever run in.
 type RunRecord struct {
 	ID         string    `json:"id"`
 	Repository string    `json:"repository"`
@@ -26,13 +24,10 @@ type RunRecord struct {
 	Outcome    string    `json:"outcome"`
 }
 
-const runRecordFile = "run.json"
-const summaryArchive = "summary.md"
-
 // runIDLayout is RFC 3339 with a fixed-width fraction. The width is what makes
 // the id sortable: RFC3339Nano trims trailing zeros, so ".1Z" would sort after
 // the later ".12Z" and both after an exact second. Everything downstream —
-// ListRuns, LatestRun, checkpoint pruning — orders runs lexicographically.
+// ListRuns, LatestRun, rotation, checkpoint pruning — orders runs lexicographically.
 const runIDLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // NewRunID names a run after the instant it started, so run ids sort chronologically and history
@@ -41,36 +36,18 @@ func NewRunID(at time.Time) string {
 	return strings.NewReplacer(":", "-", ".", "-").Replace(at.UTC().Format(runIDLayout))
 }
 
-func historyDir(stateDir string) string { return filepath.Join(stateDir, "history") }
-
-// RunDir is where a run's record, verdicts and summary are archived.
-func RunDir(stateDir, runID string) string { return filepath.Join(historyDir(stateDir), runID) }
-
 // WriteRun publishes a run's record, replacing any earlier version of it.
 func (l Log) WriteRun(record RunRecord) error {
-	dir := RunDir(l.StateDir, record.ID)
+	dir := ArchiveDir(l.StateDir, record.ID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create %s: %w", dir, err)
 	}
 	return writeJSON(filepath.Join(dir, runRecordFile), record)
 }
 
-// ArchiveSummary keeps the author's decision record with the rest of the run.
-func (l Log) ArchiveSummary(runID, contents string) error {
-	dir := RunDir(l.StateDir, runID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("failed to create %s: %w", dir, err)
-	}
-	path := filepath.Join(dir, summaryArchive)
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		return fmt.Errorf("failed to write %s: %w", path, err)
-	}
-	return nil
-}
-
 // ReadRun loads one run's record.
 func ReadRun(stateDir, runID string) (RunRecord, error) {
-	path := filepath.Join(RunDir(stateDir, runID), runRecordFile)
+	path := filepath.Join(ArchiveDir(stateDir, runID), runRecordFile)
 	data, err := os.ReadFile(path) //nolint:gosec // path is built from the plugin's own state directory
 	if err != nil {
 		return RunRecord{}, fmt.Errorf("failed to read %s: %w", path, err)
@@ -117,30 +94,15 @@ func LatestRun(stateDir, repository string) (RunRecord, bool) {
 	return RunRecord{}, false
 }
 
-// Verdicts lists the archived review files of a run, in round order.
-func Verdicts(stateDir, runID string) []string {
-	entries, err := os.ReadDir(RunDir(stateDir, runID))
-	if err != nil {
-		return nil
-	}
-	var files []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasPrefix(entry.Name(), "iteration-") {
-			files = append(files, entry.Name())
-		}
-	}
-	sort.Strings(files)
-	return files
-}
-
 // RoundView is one review round as history can still see it: the archived
-// verdict always survives in the state directory, while the diff depends on the
+// review always survives in the state directory, while the diff depends on the
 // repository and on checkpoints that retention may have already dropped.
 type RoundView struct {
 	Number   int
-	Verdict  string
 	Clean    bool
+	Blocked  bool
 	Findings int
+	Applied  int
 	Commit   string
 	Base     string
 }
@@ -155,8 +117,8 @@ type RunView struct {
 	baseline string
 }
 
-// Browse assembles every recorded run for display. Reading a verdict is cheap
-// and bounded, and doing it here keeps the pane free of file layout knowledge.
+// Browse assembles every recorded run for display. Reading a round's parsed review is cheap and
+// bounded, and doing it here keeps the pane free of file layout knowledge.
 func Browse(ctx context.Context, stateDir string) []RunView {
 	records := ListRuns(stateDir)
 	checkpoints := checkpointRounds(ctx, records)
@@ -165,15 +127,14 @@ func Browse(ctx context.Context, stateDir string) []RunView {
 		view := RunView{Record: record}
 		commits := checkpoints[record.Repository][record.ID]
 		view.baseline = commits[0]
-		for _, name := range Verdicts(stateDir, record.ID) {
-			round := RoundView{Number: roundOfVerdict(name), Verdict: filepath.Join(RunDir(stateDir, record.ID), name)}
-			contents, err := os.ReadFile(round.Verdict)
-			if err == nil {
-				round.Clean = ParseVerdict(string(contents)) == Clean
-				round.Findings = countFindings(string(contents))
+		for _, number := range ArchivedRounds(stateDir, record.ID) {
+			round := RoundView{Number: number, Commit: commits[number], Base: commits[number-1]}
+			if document, found := LoadRound(stateDir, record.ID, number); found {
+				round.Clean = document.Review.Resolve() == Clean
+				round.Blocked = document.Review.Resolve() == Blocked
+				round.Findings = len(document.Review.Findings)
+				round.Applied = document.Decisions.Counts()[ActionApplied]
 			}
-			round.Commit = commits[round.Number]
-			round.Base = commits[round.Number-1]
 			view.Rounds = append(view.Rounds, round)
 		}
 		views = append(views, view)
@@ -224,57 +185,18 @@ func (v RunView) Last() string {
 	return ""
 }
 
-func roundOfVerdict(name string) int {
-	value := strings.TrimSuffix(strings.TrimPrefix(name, "iteration-"), ".md")
-	number, err := strconv.Atoi(value)
+// marshalIndent encodes a value the way every file the loop writes is encoded: indented, so a
+// human opening one in an editor can read it.
+func marshalIndent(value any) ([]byte, error) {
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return 0
+		return nil, fmt.Errorf("failed to encode: %w", err)
 	}
-	return number
-}
-
-func countFindings(contents string) int {
-	count := 0
-	for _, line := range strings.Split(contents, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- [") {
-			count++
-		}
-	}
-	return count
-}
-
-// SummaryStats counts the decisions the author recorded for a run.
-type SummaryStats struct {
-	Applied, Rejected, Deferred int
-	Tests                       string
-}
-
-// Decisions is how many findings the author accounted for, one way or another.
-func (s SummaryStats) Decisions() int { return s.Applied + s.Rejected + s.Deferred }
-
-// ParseSummary reads the decision record the author is asked to write. The
-// markers are a prompt contract, not a guarantee: an unmarked record yields
-// zero counts rather than an error, because a digest is not worth failing over.
-func ParseSummary(contents string) SummaryStats {
-	var stats SummaryStats
-	for _, line := range strings.Split(contents, "\n") {
-		value := strings.ToLower(strings.TrimLeft(strings.TrimSpace(line), "-*• \t"))
-		switch {
-		case strings.HasPrefix(value, "applied:"):
-			stats.Applied++
-		case strings.HasPrefix(value, "rejected:"):
-			stats.Rejected++
-		case strings.HasPrefix(value, "deferred:"):
-			stats.Deferred++
-		case strings.HasPrefix(value, "tests:"):
-			stats.Tests = strings.TrimSpace(strings.TrimPrefix(strings.TrimLeft(strings.TrimSpace(line), "-*• \t"), "tests:"))
-		}
-	}
-	return stats
+	return append(data, '\n'), nil
 }
 
 func writeJSON(path string, value any) error {
-	data, err := json.Marshal(value)
+	data, err := marshalIndent(value)
 	if err != nil {
 		return fmt.Errorf("failed to encode %s: %w", path, err)
 	}
@@ -284,10 +206,11 @@ func writeJSON(path string, value any) error {
 	}
 	name := temp.Name()
 	defer func() { _ = os.Remove(name) }()
-	if _, err = temp.Write(append(data, '\n')); err == nil {
-		err = temp.Close()
-	} else {
-		_ = temp.Close()
+	if _, err = temp.Write(data); err == nil {
+		err = temp.Chmod(0o600)
+	}
+	if closeErr := temp.Close(); err == nil {
+		err = closeErr
 	}
 	if err != nil {
 		return fmt.Errorf("failed to write %s: %w", name, err)

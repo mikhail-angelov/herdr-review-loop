@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: read   # least privilege by default
 
 jobs:
   test:
@@ -16,20 +16,25 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false   # don't leave a usable token in the workspace
       - uses: actions/setup-go@v6
         with:
-          go-version: '1.26'
+          go-version: '1.26'           # keep in sync with go.mod
       - run: go vet ./...
       - run: go build ./...
-      - run: go test ./...
+      - run: go test -race -timeout=300s -covermode=atomic -coverprofile=profile.cov ./...      # a non-UTC TZ surfaces hidden time-zone assumptions
+      - run: go tool cover -func=profile.cov | tail -1
       - run: test -z "$(gofmt -l .)"
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: "v2.12.2"           # pinned so lint results are reproducible

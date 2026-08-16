@@ -27,6 +27,12 @@ contexts = ["global", "pane", "workspace"]
 command = ["bash", "bin/run.sh", "stop"]
 
 [[actions]]
+id = "finish"
+title = "Finish review"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/run.sh", "finish"]
+
+[[actions]]
 id = "panel"
 title = "Open review panel"
 contexts = ["pane", "workspace"]
@@ -37,6 +43,12 @@ id = "settings"
 title = "Open review settings"
 contexts = ["global", "pane", "workspace"]
 command = ["bash", "bin/run.sh", "open-settings"]
+
+[[actions]]
+id = "history"
+title = "Open review history"
+contexts = ["global", "pane", "workspace"]
+command = ["bash", "bin/run.sh", "open-history"]
 
 [[panes]]
 id = "panel"
@@ -53,3 +65,12 @@ placement = "popup"
 width = "72%"
 height = "60%"
 command = ["bash", "bin/run-settings.sh"]
+
+[[panes]]
+id = "history"
+title = "herdr-review-loop history"
+description = "Browse past runs, their findings and the diff each round produced."
+placement = "popup"
+width = "85%"
+height = "80%"
+command = ["bash", "bin/run-history.sh"]

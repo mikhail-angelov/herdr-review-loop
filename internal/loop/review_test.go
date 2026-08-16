@@ -32,16 +32,16 @@ func TestReviewFileRootRejectsPostValidationSymlinkSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = review.Close() }()
-	if err := os.Remove(filepath.Join(sub, "review.md")); err != nil {
+	if err = os.Remove(filepath.Join(sub, "review.md")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(sub); err != nil {
+	if err = os.Remove(sub); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, sub); err != nil {
+	if err = os.Symlink(outside, sub); err != nil {
 		t.Fatal(err)
 	}
-	if err := review.Remove(); err == nil {
+	if err = review.Remove(); err == nil {
 		t.Fatal("remove escaped root")
 	}
 	contents, err := os.ReadFile(filepath.Join(outside, "review.md"))
@@ -56,7 +56,7 @@ func TestWrittenSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = review.Close() }()
-	if err := os.WriteFile(filepath.Join(repo, "review.md"), []byte("STATUS: CLEAN"), 0o644); err != nil {
+	if err = os.WriteFile(filepath.Join(repo, "review.md"), []byte("STATUS: CLEAN"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	contents, fresh, err := review.WrittenSince(time.Now().Add(-time.Second))
@@ -74,10 +74,10 @@ func TestWrittenSinceAllowsRoundedFileTimestamp(t *testing.T) {
 	defer func() { _ = review.Close() }()
 	path := filepath.Join(repo, "review.md")
 	askedAt := time.Now()
-	if err := os.WriteFile(path, []byte("STATUS: CLEAN"), 0o644); err != nil {
+	if err = os.WriteFile(path, []byte("STATUS: CLEAN"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chtimes(path, askedAt.Truncate(time.Second), askedAt.Truncate(time.Second)); err != nil {
+	if err = os.Chtimes(path, askedAt.Truncate(time.Second), askedAt.Truncate(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	_, fresh, err := review.WrittenSince(askedAt)

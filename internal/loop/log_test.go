@@ -23,7 +23,7 @@ func TestLogTailPhaseOutcomeAndArchive(t *testing.T) {
 	if err != nil || len(tail) > 8192 || Phase(tail) != "2/3 reviewing" || LastOutcome(tail) == "" {
 		t.Fatalf("tail=%d phase=%q outcome=%q err=%v", len(tail), Phase(tail), LastOutcome(tail), err)
 	}
-	if err := log.Archive("run", 1, "STATUS: CLEAN"); err != nil {
+	if err = log.Archive("run", 1, "STATUS: CLEAN"); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(log.StateDir + "/history/run/iteration-01.md")

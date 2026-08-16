@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # notification-only: security alerts and the dashboard, without a flood of pull requests.
+  # drop open-pull-requests-limit (or set it to a number) to get automated update PRs.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    groups:
+      "GitHub Actions updates":
+        patterns: ["*"]

@@ -85,13 +85,16 @@ internal/loop/                  the run:
     panel.go                      opening and sizing the panel pane
     lock.go                       run lock + panel record
     log.go                        run log, tail, phase, outcome, history archive
-internal/ui/                    terminal plumbing and both panes:
-    tui.go                        raw mode, key decoding, framing
+    history.go                    run records, archived decisions, browse model
+    finish.go                     archive-then-delete cleanup + run digest
+    checkpoint.go                 per-round worktree snapshots and their retention
+internal/ui/                    terminal plumbing and the panes:
+    tui.go                        raw mode, key decoding, framing, pager suspend
     style.go                      bold / dim / red / clip
-    panel.go  settings.go         the two panes
+    panel.go  settings.go  history.go   the three panes
 bin/ensure-binary.sh            download-or-build bin/herdr-review-loop ([[build]] hook)
 bin/run.sh                      $HERDR_REVIEW_LOOP_BIN → bin/herdr-review-loop → PATH
-bin/run-panel.sh                bin/run-settings.sh
+bin/run-panel.sh                bin/run-settings.sh  bin/run-history.sh
 herdr-plugin.toml               manifest: build hook, actions, panes
 Makefile                        build · test · tidy · install-plugin
 .github/workflows/              ci.yml · release.yml
@@ -127,10 +130,13 @@ subcommands that render a TUI.
 | `herdr-review-loop review` | action `herdr-review-loop.review` | Run the loop. Exit 0 clean, 1 otherwise. |
 | `herdr-review-loop review --dry-run` | action `herdr-review-loop.pair` | Resolve and print the pair; prompt nobody, take no lock, write nothing. |
 | `herdr-review-loop stop` | action `herdr-review-loop.stop` | Cancel the running loop, from any pane. |
+| `herdr-review-loop finish` | action `herdr-review-loop.finish` | Close out a review: archive decisions, delete the loop's files, close the panel (§5.12). |
 | `herdr-review-loop open-panel` | action `herdr-review-loop.panel` | Focus the workspace's live panel, else open one beside the invoking pane. |
 | `herdr-review-loop open-settings` | action `herdr-review-loop.settings` | Open the settings popup. |
+| `herdr-review-loop open-history` | action `herdr-review-loop.history` | Open the history popup. |
 | `herdr-review-loop panel` | pane `panel` | The panel TUI process. |
 | `herdr-review-loop settings` | pane `settings` | The settings TUI process. Not a TTY → dump settings as text. |
+| `herdr-review-loop history` | pane `history` | The history TUI process. Not a TTY → dump the runs as text. |
 | `herdr-review-loop version` | — | The bare version and nothing else (`0.1.0\n`), injected via `-ldflags -X main.version`. Deliberately unadorned: this output *is* the install-time acceptance test (§7.2), compared whole, so a decorative prefix would have to be parsed back off in shell. |
 | `herdr-review-loop help` | — | Usage. Unknown subcommand → usage on stderr, exit 2. |
 
@@ -345,7 +351,7 @@ Keys: `r` start a run, `x` stop, `s` settings, `q`/`ctrl-c` close. `r` **detache
 loop (own session, stdio discarded, context overridden with `focused_pane_id =
 HERDR_REVIEW_LOOP_AUTHOR`) — closing the panel must not cancel half an hour of review. `x` and `s`
 re-invoke this binary's own `stop` / `open-settings` and show its last line, so
-cancelling exists once.
+canceling exists once.
 
 **One panel per workspace.** A panel claims `panel.<workspace>.json` in the state dir by
 exclusive create; the loser focuses the winner (`plugin pane focus <pane>`) and exits.
@@ -426,8 +432,10 @@ again between the two signals. `flock` removes stale *locks*, not stale *pids* (
   also written to stdout (Herdr captures it under
   `herdr plugin log list --plugin herdr-review-loop`).
 - **History** — every verdict archived to
-  `<state-dir>/history/<run-id>/iteration-NN.md`, run id = the RFC3339 start time with
-  `:` and `.` replaced by `-`.
+  `<state-dir>/history/<run-id>/iteration-NN.md`, run id = the RFC3339 start time with a
+  fixed nine-digit fraction and `:` and `.` replaced by `-`. The fraction is padded rather
+  than trimmed because listing, latest-run selection and checkpoint pruning all order runs
+  lexicographically by id, and a trimmed fraction sorts `.1` after the later `.12`.
 - **Progress** — `workspace report-metadata <ws> --source plugin:herdr-review-loop
   --token review=<phase>`, cleared with `--clear-token review` when the run ends however
   it ends. The **source** is the full plugin id, because that is an ownership key; the
@@ -452,6 +460,111 @@ Prompts live in `internal/loop/prompts.go` as templates over `{review_path}` and
 to uncommitted changes. The reviewer becomes progressively narrower after round 1, and
 the author becomes progressively more conservative after round 1. Golden tests pin the
 rendered output for representative rounds.
+
+### 5.12 Finishing a review
+
+A run leaves `review_file` and `review-summary.md` in the working tree. They are
+scaffolding, not results — the result is the code — and `herdr-review-loop finish` removes
+them. It is explicit, never automatic on a clean verdict: the reason to read a review is
+that it is still there.
+
+```
+take the run lock, refusing if it is held (in either direction — see below)
+resolve the repository's latest run          ← reported even when it left no decisions
+read review-summary.md
+    non-empty → parse the decision counts · archive to history/<run-id>/summary.md
+delete review_file and review-summary.md through the run's os.Root
+print the digest
+close the panel                              ← last, always
+```
+
+Four ordering and scope constraints, each of which is the whole point of a step:
+
+- **A held lock refuses the cleanup**, and the cleanup *takes* that lock rather than
+  sampling it, holding it until both files are gone. Sampling would leave a window in which
+  a loop starts after the check and has its fresh files deleted underneath it. Refusal is
+  the flock itself, not "is there a live holder": a lock held with an unreadable record is a
+  loop mid-startup (§5.9), and deleting the review file underneath it would break the
+  freshness contract that decides whether a verdict belongs to the current round.
+- **Archive before deleting.** `review-summary.md` is the only durable account of what was
+  applied and what was refused, it is deleted unread at the start of the next run (§5.4),
+  and nothing else archives it. A run with no record of its own — decisions left by a run
+  that predates records — gets one created rather than dropped, so the archive-then-delete
+  order holds unconditionally. Resolving the run happens *before* that branch, because a
+  review that comes back clean on round 1 never reaches an author phase and so writes no
+  summary; reading the run only inside the archive step would leave that case with a digest
+  that names no run, no rounds and no outcome.
+- **Exactly two files.** No globbing, no heuristics for "other temporary files". The set is
+  what this plugin created; guessing at what else in a repository is disposable is how a
+  cleanup deletes someone's work.
+- **The panel closes last.** `finish` may have been invoked *by* the panel, and closing a
+  pane can take its process group with it, so nothing that must happen may happen after.
+  Invoked from the panel itself, the panel skips the signal and exits on success, which
+  ends its pane by the same route; on failure it stays up so the reason is readable.
+
+The digest reports rounds, outcome, and the applied/rejected/deferred counts. Those counts
+exist because a clean verdict alone cannot distinguish a loop that converged by fixing
+findings from one that converged by refusing them (§5.11 closes rejected decisions from
+round 2 onward). Counting is a heuristic over the prompt's markers, so an unmarked record
+yields zeroes rather than an error.
+
+### 5.13 Checkpoints
+
+In a git work tree, the run snapshots the working tree before the first fix (round 0) and
+after every author phase, so history can show what each round changed.
+
+```
+GIT_INDEX_FILE=<temp>  git -C <repo> add -A
+                       git -C <repo> write-tree
+                       git -C <repo> commit-tree <tree> [-p HEAD] -m "…"
+                       git -C <repo> update-ref refs/herdr-review-loop/<run-id>/round-NN <commit>
+```
+
+The temporary index is the load-bearing part: the snapshot touches no worktree file, no
+staged change, no stash entry and no branch, and it takes no `index.lock` — so an agent
+running git in the same repository during a snapshot cannot collide with it. Author and
+committer identity is supplied through the environment, so a machine with no configured
+`user.email` still checkpoints instead of failing.
+
+`git stash create` is the shorter route and is wrong here: it does not capture untracked
+files, and agents create files constantly, so its snapshots would silently omit most of
+what a round produced.
+
+- **Round 0 is required, not decorative.** Without a baseline there is nothing for a
+  whole-run diff to be measured against.
+- Reviewer phases are not snapshotted. The reviewer is told not to edit code; if it does,
+  the change appears inside the next round's diff. This is an accepted imprecision.
+- Failures are logged and stepped over. A review that already happened is not worth
+  abandoning because a snapshot did not.
+- **Retention** is the newest `CheckpointRetention` (5) runs per repository, pruned at the
+  start of a run. Refs keep their objects reachable, so dropping them is what lets `git gc`
+  reclaim the space. `finish` deliberately does *not* prune: it clears the working tree,
+  while the refs and the archive are the record it just wrote into.
+
+### 5.14 The history pane
+
+A popup (85 % × 80 %) over two levels: runs, then the rounds of the selected run. Keys:
+`j`/`k` move, `enter` opens a run and then that round's findings, `d` the diff that round
+produced, `a` the whole run's diff, `c` prints a restore command, `esc` goes back, `q`
+closes.
+
+**Documents go to a pager; the list stays here.** A diff viewer is a scrolling viewport
+with search and highlighting — precisely the thing §9.3 named as the condition for
+revisiting the no-framework decision. It is not needed: `git diff` drives the user's own
+pager, and findings are handed to `$PAGER`. The pane renders a list, which is what this
+TUI is already good at. `Terminal.Suspend` restores cooked mode and the cursor around the
+child and forces a redraw afterwards.
+
+**Restore is printed, never run.** Rolling a working tree back is the one destructive
+operation history could offer, and `git restore --source=<ref> --worktree -- .` does not
+delete files created after the checkpoint — so an automated "restore" would produce a
+hybrid that looks like a rollback and is not. Printing the command puts the judgement where
+the context is.
+
+**Degrading is a requirement.** The verdicts live in the state directory and the diffs live
+in the repository, so a moved, deleted or non-git repository, or a run whose checkpoints
+have been pruned, must still list its findings. Each round carries a `diff`/`—` marker for
+exactly this reason; a run out of retention is a shorter screen, not a screen of errors.
 
 ---
 
@@ -502,13 +615,14 @@ platforms = ["linux", "macos"]
 [[build]]                                    # runs on every install, incl. update
 command = ["bash", "bin/ensure-binary.sh", "--in-tree"]
 
-[[actions]]  review · pair · stop · panel · settings
-[[panes]]    panel (split) · settings (popup, 72% × 60%)
+[[actions]]  review · pair · stop · finish · panel · settings · history
+[[panes]]    panel (split) · settings (popup, 72% × 60%) · history (popup, 85% × 80%)
 ```
 
 Actions run `bash bin/run.sh <subcommand>`; panes run `bin/run-panel.sh` /
-`bin/run-settings.sh`. `stop` and `settings` are also available in the `global` context;
-the rest are `pane` + `workspace`.
+`bin/run-settings.sh` / `bin/run-history.sh`. `stop`, `settings` and `history` are also
+available in the `global` context; the rest are `pane` + `workspace`, because they need the
+invoking pane's repository or agent.
 
 The `[[build]]` hook is the whole reason install works: `herdr plugin install` replaces
 the managed directory with a fresh checkout that never carries the gitignored binary, and
@@ -678,6 +792,10 @@ loop declares, so a fake covers the whole run without a live server.
 | `loop/run` | Against the fake: clean on round 1; findings→fix→clean; budget spent (exit 1); blocked agent; reviewer never writes the file; dry run takes no lock and writes nothing |
 | `loop/panel` | Width computation at 40 / 64 / 100 / 200 columns; resize direction and amount |
 | `loop/lock` | Second acquire refused while held; free after the holder is SIGKILLed; two panel claims → one winner |
+| `loop/finish` | Decisions archived before deletion; refusal while the lock is held leaves both files; orphan decisions still archived; a run with no decisions still reported in the digest; empty tree → nothing to finish; digest counts; unmarked record → zeroes |
+| `loop/checkpoint` | Untracked files captured; ignored files not; worktree, index and stash unchanged by a snapshot; no HEAD yet; prune keeps the newest runs; no temporary index left behind; a run keeps at most the retention limit including itself; skipped outside a work tree |
+| `loop/history` | Runs newest first; run ids sort chronologically across sub-second instants; verdicts paired with the checkpoint that follows them; a round with no checkpoint reports no diff |
+| `ui/history` | Rounds hidden until a run is opened; diff/no-diff markers; empty history; fits the pane at 40 columns |
 | `loop/log` | Tail beyond the window, phase and outcome extraction, no-match log |
 | `ui/tui` | Key decoding: a CSI sequence split across two reads; a bracketed-paste marker not read as five keys; application-cursor arrows (`ESC O A`); a lone `esc` still delivered after the partial-sequence window |
 | `ui` | Panel view at 32 / 44 / 80 columns; settings edit→reject→fix→save; quit-confirm |
@@ -818,6 +936,13 @@ The author always starts a fresh session. It reads `{review_path}`, `{summary_pa
 present, and the current uncommitted diff; it must not edit `{review_path}`. Before
 finishing it must rewrite `{summary_path}` to at most 20 short bullets, retaining current
 applied decisions and still-relevant rejected or deferred decisions with reasons.
+
+Each bullet begins with `applied:`, `rejected:` or `deferred:`, and the file ends with a
+single `tests:` line recording whether the build and test suite were run and with what
+result. Both are prompt contracts rather than enforced formats: the markers are what makes
+the finish digest countable (§5.12), and the `tests:` line surfaces work the agent's own
+review skills already do inside the round but that the loop otherwise never sees. Neither
+is validated — a malformed record costs a digest, not a run.
 
 - Round 1 accepts justified high findings but rejects or defers broad low/medium work.
 - Round 2 accepts remaining high findings and only local medium fixes.

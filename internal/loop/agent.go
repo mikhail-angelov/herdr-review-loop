@@ -10,6 +10,8 @@ import (
 	"github.com/mikhail-angelov/herdr-review-loop/internal/herdr"
 )
 
+// AgentClient is the slice of the Herdr CLI this package drives. It is declared here, on the
+// consumer side, so the loop depends on the handful of calls it makes rather than on the client.
 type AgentClient interface {
 	AgentGet(context.Context, string) (herdr.Agent, error)
 	AgentWait(context.Context, string, time.Duration) (herdr.Agent, error)
@@ -32,6 +34,10 @@ func remaining(ctx context.Context) (time.Duration, error) {
 	}
 	return left, nil
 }
+
+// Settle waits for an agent to become idle before it is given new work. A blocked agent is an
+// error rather than something to wait out: it is asking its human a question, and the loop cannot
+// answer it.
 func Settle(ctx context.Context, client AgentClient, agent herdr.Agent) (herdr.Agent, error) {
 	current, err := client.AgentGet(ctx, herdr.Target(agent))
 	if err != nil {
@@ -59,6 +65,9 @@ func Settle(ctx context.Context, client AgentClient, agent herdr.Agent) (herdr.A
 	return current, nil
 }
 
+// SubmitAndWait sends a prompt and waits for the turn it starts. Agents occasionally swallow a
+// submitted prompt without starting a turn, so a stall is retried by pressing enter, and progress
+// is judged by the agent's state sequence rather than by what the CLI reports.
 func SubmitAndWait(ctx context.Context, client AgentClient, agent herdr.Agent, prompt string) (herdr.Agent, error) {
 	before, err := client.AgentGet(ctx, herdr.Target(agent))
 	if err != nil {
@@ -88,8 +97,8 @@ func SubmitAndWait(ctx context.Context, client AgentClient, agent herdr.Agent, p
 		return waitAfterPrompt(ctx, client, agent, budget)
 	}
 	for range 3 {
-		if err := client.AgentSendKeys(ctx, herdr.Target(agent), "enter"); err != nil {
-			return herdr.Agent{}, err
+		if sendErr := client.AgentSendKeys(ctx, herdr.Target(agent), "enter"); sendErr != nil {
+			return herdr.Agent{}, sendErr
 		}
 		if advanced(ctx, client, agent, before.StateChangeSeq, 4*time.Second) {
 			budget, err = remaining(ctx)
@@ -99,7 +108,7 @@ func SubmitAndWait(ctx context.Context, client AgentClient, agent herdr.Agent, p
 			return waitAfterPrompt(ctx, client, agent, budget)
 		}
 	}
-	return herdr.Agent{}, fmt.Errorf("the prompt did not start a turn")
+	return herdr.Agent{}, errors.New("the prompt did not start a turn")
 }
 
 func waitAfterPrompt(ctx context.Context, client AgentClient, agent herdr.Agent, budget time.Duration) (herdr.Agent, error) {
@@ -138,6 +147,8 @@ func resetCommand(agent herdr.Agent, configured string) string {
 	return configured
 }
 
+// ValidateResetCommand reports whether this agent kind can have its session cleared, so the loop
+// fails before doing any work rather than halfway through.
 func ValidateResetCommand(agent herdr.Agent, configured string) error {
 	if resetCommand(agent, configured) == "" {
 		return fmt.Errorf("no reset command for %s", herdr.Describe(agent))
@@ -145,6 +156,9 @@ func ValidateResetCommand(agent herdr.Agent, configured string) error {
 	return nil
 }
 
+// ResetSession clears an agent's context between rounds so each round is judged on the code, not
+// on what the agent remembers saying. The command is typed and read back before enter is sent,
+// because agents drop input while they are still redrawing.
 func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, configured string, log func(string)) error {
 	command := resetCommand(agent, configured)
 	if command == "" {
@@ -158,7 +172,7 @@ func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, co
 			return err
 		}
 		if !pause(ctx, 400*time.Millisecond) {
-			return ctx.Err()
+			return interrupted(ctx)
 		}
 		visible, err := client.PaneRead(ctx, agent.PaneID)
 		if err != nil {
@@ -169,13 +183,13 @@ func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, co
 				return err
 			}
 			pause(ctx, 1500*time.Millisecond)
-			return ctx.Err()
+			return interrupted(ctx)
 		}
 		if err := client.PaneSendKeys(ctx, agent.PaneID, "esc"); err != nil {
 			return err
 		}
 		if !pause(ctx, 400*time.Millisecond) {
-			return ctx.Err()
+			return interrupted(ctx)
 		}
 	}
 	if log != nil {
@@ -183,6 +197,15 @@ func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, co
 	}
 	return fmt.Errorf("could not reset %s", herdr.Describe(agent))
 }
+
+// interrupted turns a canceled context into a named error, and stays nil while the context lives.
+func interrupted(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("reset interrupted: %w", err)
+	}
+	return nil
+}
+
 func pause(ctx context.Context, duration time.Duration) bool {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()

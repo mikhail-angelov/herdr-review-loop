@@ -1,6 +1,9 @@
 .claude
 bin/herdr-review-loop
 dist/
+coverage.out
+profile.cov
+*.test
 run.lock
 run.lock.json
 herdr-review-loop.log
@@ -8,3 +11,6 @@ history/
 panel.*.json
 review.md
 review-summary.md
+.idea/
+.vscode/
+.DS_Store

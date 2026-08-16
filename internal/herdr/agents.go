@@ -7,6 +7,7 @@ import (
 	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
 )
 
+// Agent is one coding agent running in a Herdr pane.
 type Agent struct {
 	PaneID         string `json:"pane_id"`
 	WorkspaceID    string `json:"workspace_id"`
@@ -16,6 +17,7 @@ type Agent struct {
 	StateChangeSeq int64  `json:"state_change_seq"`
 }
 
+// Find returns the agent occupying the given pane.
 func Find(agents []Agent, paneID string) (Agent, bool) {
 	for _, agent := range agents {
 		if agent.PaneID == paneID {
@@ -24,12 +26,17 @@ func Find(agents []Agent, paneID string) (Agent, bool) {
 	}
 	return Agent{}, false
 }
+
+// Target is how an agent is addressed on the Herdr command line: its name when it has one, since
+// names survive a pane being recreated, and the pane id otherwise.
 func Target(agent Agent) string {
 	if agent.Name != "" {
 		return agent.Name
 	}
 	return agent.PaneID
 }
+
+// Describe renders an agent for humans, in log lines and the panel.
 func Describe(agent Agent) string {
 	suffix := ""
 	if agent.Name != "" {
@@ -38,6 +45,9 @@ func Describe(agent Agent) string {
 	return fmt.Sprintf("%s @ %s%s", fallback(agent.Kind, "?"), agent.PaneID, suffix)
 }
 
+// PickReviewer chooses who reviews the author's work: the configured agent by name, or otherwise
+// any agent of a different kind in the same workspace, so the review comes from a second opinion
+// rather than from the same model. note, when set, reports an ambiguous choice.
 func PickReviewer(cfg config.Values, agents []Agent, author Agent, note func(string)) (Agent, error) {
 	var candidates []Agent
 	for _, agent := range agents {

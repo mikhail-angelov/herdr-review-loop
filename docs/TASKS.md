@@ -87,7 +87,7 @@ every command the plugin issues (`AgentList/Get/Wait/Prompt/Focus/SendKeys`,
 `WorkspaceReportMetadata`, `NotificationShow`). Errors carry the herdr `code` so callers
 match `agent_prompt_stalled`. Every call context-cancellable (§9.2).
 **Done:** envelope tests for success, structured error, non-JSON stderr, non-zero exit,
-cancelled context; env tests for missing/malformed values.
+canceled context; env tests for missing/malformed values.
 
 ### T1.2 — `internal/herdr` agents `feat`
 *deps: T1.1* — `List`, `Find(paneID)`, `PickReviewer(cfg, all, author, note)` with the
@@ -178,8 +178,8 @@ a review round that settles, waits, prompts and recovers a stalled prompt must n
 `review_timeout` in total.
 
 ### T2.5 — Cancellation `feat`
-*deps: T2.4* — Loop context cancelled on SIGTERM/SIGINT; on cancel it clears the progress
-token, releases the lock, logs `cancelled`, exits non-zero. `herdr-review-loop stop`: read
+*deps: T2.4* — Loop context canceled on SIGTERM/SIGINT; on cancel it clears the progress
+token, releases the lock, logs `canceled`, exits non-zero. `herdr-review-loop stop`: read
 the holder, **re-verify the pid's start time against the record immediately before each
 signal** and skip the signal when it no longer matches (§5.9), SIGTERM, 3 s, re-verify,
 SIGKILL, 1 s, clear the **loop's** workspace token, notify, exit 1 only if it survived.

@@ -19,7 +19,10 @@ func PanelWidth(workspaceWidth int) int {
 	return width
 }
 
-func ResizeDirection(current, target, workspace int) (string, float64, bool) {
+// ResizeDirection is the resize a pane needs to reach its target width, as a fraction of the
+// workspace. It reports false when the pane is already within a column of the target, so a run
+// does not nudge the layout on every start.
+func ResizeDirection(current, target, workspace int) (direction string, amount float64, resize bool) {
 	if target == 0 || current-target >= -1 && current-target <= 1 {
 		return "", 0, false
 	}

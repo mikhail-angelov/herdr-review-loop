@@ -63,11 +63,11 @@ func (c *runClient) AgentFocus(_ context.Context, target string) error {
 	return c.onFocus(target)
 }
 func (*runClient) AgentSendKeys(context.Context, string, string) error { return nil }
-func (c *runClient) PaneSendText(_ context.Context, _ string, value string) error {
+func (c *runClient) PaneSendText(_ context.Context, _, value string) error {
 	c.sentText = append(c.sentText, value)
 	return nil
 }
-func (c *runClient) PaneSendKeys(_ context.Context, _ string, value string) error {
+func (c *runClient) PaneSendKeys(_ context.Context, _, value string) error {
 	c.sentKeys = append(c.sentKeys, value)
 	return nil
 }

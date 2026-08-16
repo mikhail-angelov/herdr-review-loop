@@ -1,10 +1,54 @@
 version: "2"
-
 linters:
-  default: standard
+  default: none
+  enable:
+    - bodyclose        # unclosed http response bodies
+    - copyloopvar
+    - dupl
+    - errorlint        # %w and errors.Is/As correctness
+    - gochecknoinits   # no init() — wire things explicitly in main
+    - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - nestif
+    - prealloc
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - wrapcheck        # errors crossing package boundaries must be wrapped
+  settings:
+    gocritic:
+      disabled-checks: [wrapperFunc, hugeParam, rangeValCopy, singleCaseSwitch, ifElseChain]
+      enabled-tags: [performance, style, experimental]
+    govet:
+      enable: [shadow]
+    misspell:
+      locale: US
+    wrapcheck:
+      # errors crossing our own package boundaries already name what failed; wrapcheck is here for
+      # the bare stdlib errors, where "no such file or directory" alone tells nobody anything
+      ignore-package-globs:
+        - github.com/mikhail-angelov/herdr-review-loop/*
   exclusions:
+    generated: lax
     rules:
-      - path: '_test\.go'
-        linters:
-          - staticcheck
-        text: "SA5011"
+      - linters: [revive]
+        text: 'package-comments: should have a package comment'
+      - linters: [staticcheck]
+        text: at least one file in a package should have a package comment
+      - linters: [dupl, gosec, wrapcheck]
+        path: _test\.go
+      - linters: [revive, unparam, unused]
+        path: _test\.go$
+        text: unused-parameter
+    paths:
+      - vendor
+formatters:
+  exclusions:
+    generated: lax

@@ -25,7 +25,7 @@ func TestCallDecodesResult(t *testing.T) {
 	}
 }
 
-func TestCallReturnsCancelledContext(t *testing.T) {
+func TestCallReturnsCanceledContext(t *testing.T) {
 	client := Client{Binary: command(t, `sleep 5`)}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

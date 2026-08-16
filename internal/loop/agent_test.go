@@ -35,11 +35,11 @@ func (f *fakeAgentClient) AgentSendKeys(context.Context, string, string) error {
 	f.keys++
 	return nil
 }
-func (f *fakeAgentClient) PaneSendText(_ context.Context, _ string, value string) error {
+func (f *fakeAgentClient) PaneSendText(_ context.Context, _, value string) error {
 	f.sentText = append(f.sentText, value)
 	return nil
 }
-func (f *fakeAgentClient) PaneSendKeys(_ context.Context, _ string, value string) error {
+func (f *fakeAgentClient) PaneSendKeys(_ context.Context, _, value string) error {
 	f.sentKeys = append(f.sentKeys, value)
 	return nil
 }

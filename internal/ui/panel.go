@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,11 +9,14 @@ import (
 	"time"
 )
 
+// PanelState is everything the panel renders: who is paired with whom, what the loop is doing, and
+// the journal tail it scrolls.
 type PanelState struct {
 	Author, Reviewer, Phase, Tail, Message string
 	Running                                bool
 }
 
+// PanelView renders one frame of the panel into width columns and rows lines.
 func PanelView(state PanelState, width, rows int) string {
 	if width < 1 || rows < 1 {
 		return ""
@@ -25,8 +27,9 @@ func PanelView(state PanelState, width, rows int) string {
 	}
 	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width), strings.Repeat("─", width)}
 	footer := append([]string{""}, panelHints(state.Running, width)...)
-	tail := []string{}
-	for _, line := range strings.Split(state.Tail, "\n") {
+	tailLines := strings.Split(state.Tail, "\n")
+	tail := make([]string, 0, len(tailLines))
+	for _, line := range tailLines {
 		if width < 44 && strings.HasPrefix(line, "[") {
 			if end := strings.Index(line, "] "); end >= 0 {
 				line = line[end+2:]
@@ -44,7 +47,9 @@ func PanelView(state PanelState, width, rows int) string {
 	if len(tail) > budget {
 		tail = tail[len(tail)-budget:]
 	}
-	lines := append(header, tail...)
+	lines := make([]string, 0, len(header)+len(tail)+len(footer)+1)
+	lines = append(lines, header...)
+	lines = append(lines, tail...)
 	lines = append(lines, footer...)
 	if state.Message != "" {
 		lines = append(lines, Clip(state.Message, width))
@@ -56,7 +61,7 @@ func PanelView(state PanelState, width, rows int) string {
 }
 
 func panelHints(running bool, width int) []string {
-	hints := []string{"r review", "s settings", "q close"}
+	hints := []string{"r review", "f finish", "h history", "s settings", "q close"}
 	if running {
 		hints = []string{"x stop", "s settings", "q close"}
 	}
@@ -76,9 +81,20 @@ func panelHints(running bool, width int) []string {
 	return lines
 }
 
+// PanelActions are the panel's keys. Each returns the line to show as the result
+// of the keypress; each re-invokes the binary's own subcommand, so starting,
+// canceling and finishing a review exist in exactly one place.
+// Finish reports whether the review was closed out. On success the panel has
+// nothing left to show and exits, which ends its pane; on failure — a loop still
+// running — the reason stays on screen instead of vanishing with the pane.
+type PanelActions struct {
+	Review, Stop, Settings, History func() string
+	Finish                          func() (string, bool)
+}
+
 // Panel keeps no mutable loop state: each refresh gets its display state from files
 // and callbacks, so closing the pane cannot cancel the detached loop process.
-func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings func() string) error {
+func Panel(in, out *os.File, refresh func() PanelState, actions PanelActions) error {
 	if !IsTTY(in) || !IsTTY(out) {
 		_, _ = fmt.Fprint(out, PanelView(refresh(), 80, 24))
 		return nil
@@ -90,7 +106,7 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 	defer terminal.Close()
 	keys := make(chan string, 1)
 	go func() {
-		reader := NewKeyReader(bufio.NewReader(in), in)
+		reader := NewKeyReader(in)
 		for {
 			key, err := reader.ReadKey()
 			if err != nil {
@@ -104,6 +120,11 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 	resize := make(chan os.Signal, 1)
 	signal.Notify(resize, syscall.SIGWINCH)
 	defer signal.Stop(resize)
+	// finish closes the panel by terminating this process. Handling the signal
+	// rather than dying under it lets the terminal be restored on the way out.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGTERM)
+	defer signal.Stop(quit)
 	message := ""
 	for {
 		state := refresh()
@@ -119,12 +140,21 @@ func Panel(in, out *os.File, refresh func() PanelState, review, stop, settings f
 			case "q", "\x03", "esc":
 				return nil
 			case "r":
-				message = review()
+				message = actions.Review()
 			case "x":
-				message = stop()
+				message = actions.Stop()
 			case "s":
-				message = settings()
+				message = actions.Settings()
+			case "h":
+				message = actions.History()
+			case "f":
+				finished := false
+				if message, finished = actions.Finish(); finished {
+					return nil
+				}
 			}
+		case <-quit:
+			return nil
 		case <-tick.C:
 		case <-resize:
 		}

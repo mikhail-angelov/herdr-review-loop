@@ -1,13 +1,37 @@
-.PHONY: build test tidy install-plugin release
+# version is the plugin manifest's, not git's: herdr matches the binary against it, and
+# bin/ensure-binary.sh refuses a binary whose `version` output disagrees.
+VERSION=$(shell awk -F '"' '$$1 ~ /^version[[:space:]]*=/ { print $$2; exit }' herdr-plugin.toml)
+
+.PHONY: all build test lint fmt vet prep tidy version install-plugin release
+
+all: prep build
 
 build:
 	bash bin/ensure-binary.sh --build
 
 test:
-	go test ./...
+	go clean -testcache
+	go test -race -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out | tail -1
+	@rm -f coverage.out
+
+lint:
+	golangci-lint run
+
+vet:
+	go vet ./...
+
+fmt:
+	gofmt -s -w $(shell find . -type f -name "*.go" -not -path "./vendor/*")
+
+# run before every commit
+prep: fmt vet lint test
 
 tidy:
 	go mod tidy
+
+version:
+	@echo "$(VERSION)"
 
 install-plugin: build
 	herdr plugin link .

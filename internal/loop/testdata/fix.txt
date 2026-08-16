@@ -2,4 +2,4 @@ You are the author in round 2 of an automated review loop and have a fresh sessi
 
 Apply remaining high-severity findings you agree with. Apply medium-severity findings only when their fix is local; reject or defer all other findings with a short reason. Do not edit /repo/review.md.
 
-Before finishing, rewrite /repo/review-summary.md as a compact decision record: keep at most 20 bullets; retain only current applied decisions and still-relevant rejected or deferred decisions, each with a short reason. The next reviewer will use this record to avoid repeating settled comments.
+Before finishing, rewrite /repo/review-summary.md as a compact decision record: keep at most 20 bullets, each beginning with applied:, rejected:, or deferred: and carrying a short reason. Retain only current applied decisions and still-relevant rejected or deferred ones. End the file with a single line beginning with tests: that records whether you ran the build and the test suite and what the outcome was. The next reviewer will use this record to avoid repeating settled comments.

@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// Values is the effective configuration: file settings merged over the defaults.
 type Values struct {
 	ReviewerKind  string
 	ReviewerName  string
@@ -21,15 +22,18 @@ type Values struct {
 	ResetCommand  string
 }
 
+// Defaults are the settings used when config.json is absent or a setting is unreadable.
 func Defaults() Values {
 	return Values{MaxIterations: 10, ReviewFile: "review.md", ReviewTimeout: 30 * time.Minute, FixTimeout: 30 * time.Minute}
 }
 
+// Field describes one setting for the settings pane: its key, how to label it and how to read it.
 type Field struct {
 	Key, Label, Hint string
 	Kind             string
 }
 
+// Fields lists every setting, in the order the settings pane shows them.
 func Fields() []Field {
 	return []Field{
 		{"reviewer_kind", "reviewer kind", "agent kind that reviews; empty uses another kind", "optional"},
@@ -42,11 +46,13 @@ func Fields() []Field {
 	}
 }
 
+// Path is the config file inside the plugin's config directory.
 func Path(dir string) string { return filepath.Join(dir, "config.json") }
 
-// Load never lets a malformed user setting prevent commands such as stop from running.
-func Load(dir string) (Values, []string) {
-	values := Defaults()
+// Load reads config.json over the defaults and returns the settings it could not use as warnings.
+// A malformed user setting never prevents commands such as stop from running.
+func Load(dir string) (values Values, warnings []string) {
+	values = Defaults()
 	data, err := os.ReadFile(Path(dir))
 	if os.IsNotExist(err) {
 		return values, nil
@@ -58,7 +64,6 @@ func Load(dir string) (Values, []string) {
 	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
 		return values, []string{"config.json is not a JSON object of settings, using defaults"}
 	}
-	var warnings []string
 	known := map[string]bool{}
 	for _, field := range Fields() {
 		known[field.Key] = true
@@ -81,6 +86,7 @@ func Load(dir string) (Values, []string) {
 	return values, warnings
 }
 
+// Save writes the settings that differ from the defaults, atomically, and returns the file path.
 func Save(dir string, values Values) (string, error) {
 	defaults := Defaults()
 	stored := map[string]any{}
@@ -105,16 +111,16 @@ func Save(dir string, values Values) (string, error) {
 	if values.ResetCommand != defaults.ResetCommand {
 		stored["reset_command"] = values.ResetCommand
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("failed to create config directory %s: %w", dir, err)
 	}
 	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to encode settings: %w", err)
 	}
 	temp, err := os.CreateTemp(dir, ".config-*")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create temporary config file in %s: %w", dir, err)
 	}
 	name := temp.Name()
 	defer func() { _ = os.Remove(name) }()
@@ -125,14 +131,15 @@ func Save(dir string, values Values) (string, error) {
 		err = closeErr
 	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to write %s: %w", name, err)
 	}
-	if err = os.Rename(name, Path(dir)); err != nil {
-		return "", err
+	if err := os.Rename(name, Path(dir)); err != nil {
+		return "", fmt.Errorf("failed to install config file: %w", err)
 	}
 	return Path(dir), nil
 }
 
+// Parse turns one setting typed in the settings pane into its stored representation.
 func Parse(key, text string) (any, error) {
 	text = strings.TrimSpace(text)
 	switch key {
@@ -184,6 +191,7 @@ func Apply(values *Values, key string, value any) error {
 	return nil
 }
 
+// Show renders one setting for display, the inverse of Parse.
 func Show(key string, values Values) string {
 	switch key {
 	case "reviewer_kind":

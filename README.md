@@ -72,15 +72,19 @@ Then, from the pane of the agent that wrote the code:
 2. Watch the panel that opens beside you, or keep working elsewhere.
 3. When it finishes you have `review.md` (the last verdict) and `review-summary.md` (what
    was applied, rejected, or deferred, and why) — plus the actual fixes in your tree.
+4. Read them, then press `f` in the panel to **finish**: the run's decisions are archived,
+   both scaffolding files are deleted, and the panel closes. Your code changes stay.
 
 Not sure who would be paired? `review --dry-run` prints the pair and touches nothing.
 
 For development instead of install:
 
 ```sh
-make build
-herdr plugin link .
+make install-plugin   # build, then herdr plugin link .
+make prep             # fmt + vet + lint + test — run before every commit
 ```
+
+`make prep` needs [golangci-lint](https://golangci-lint.run/welcome/install/) v2.
 
 ## Commands
 
@@ -89,7 +93,62 @@ herdr plugin link .
 | `review` | Runs the reviewer → author → reviewer loop. Exits 0 only when the review is clean. |
 | `review --dry-run` | Prints the author and reviewer without taking a lock or writing files. |
 | `stop` | Cancels the active loop from any pane. |
-| `open-panel` / `open-settings` | Opens the corresponding pane. |
+| `finish` | Closes out a review: archives the decisions, deletes the two loop files, closes the panel. |
+| `open-panel` / `open-settings` / `open-history` | Opens the corresponding pane. |
+
+## Finishing a review
+
+A run leaves two files in your working tree, and they are scaffolding rather than results
+— the result is the code. `finish` clears them:
+
+```
+run 2026-08-09 19:12 · claude @ w5:p1 ← codex @ w5:p2 · 3 round(s) · clean
+decisions: 4 applied · 2 rejected · 1 deferred
+tests: go test ./... passed
+decisions archived to history/2026-08-09T19-12-04Z/summary.md
+removed review.md, review-summary.md
+```
+
+The counts matter more than they look. A clean verdict does not by itself mean anything
+was fixed — the author may have rejected every finding, and round 2 onward treats rejected
+decisions as closed. `4 applied · 2 rejected` is the difference between a review that
+converged and one that was talked out of.
+
+`finish` never commits anything and never touches a file the plugin did not create. It
+refuses while a loop is running (`stop` it first), archives the decision record before
+deleting it, and closes the panel last.
+
+## History and checkpoints
+
+Every run is recorded under the plugin's state directory, and — in a git repository —
+each round's working tree is snapshotted so you can see what that round actually changed.
+`open-history` (or `h` in the panel) opens a browser over both:
+
+```
+ herdr-review-loop · history
+ > 2026-08-09 19:12 · claude @ w5:p1 ← codex @ w5:p2 · 3 round(s) · clean
+     round 1   6 finding(s)    diff
+   > round 2   2 finding(s)    diff
+     round 3   clean           —
+   2026-08-09 14:40 · claude @ w5:p1 ← codex @ w5:p2 · 1 round(s) · canceled
+
+   enter findings · d round diff · a run diff · c restore · esc back · q close
+```
+
+`enter` shows that round's findings, `d` the diff that round produced, `a` the whole run's
+diff. Both open in your own pager — `$PAGER` for findings, git's for diffs — so scrolling,
+search and highlighting are whatever you already have configured. `c` prints a `git
+restore` command rather than running it: rolling back is the one destructive thing here,
+it cannot be made exact without also deleting files created after the checkpoint, and that
+call is yours.
+
+Checkpoints are written with a temporary index, so they never touch your worktree, your
+staged changes, the stash stack, or `HEAD`, and they take no `index.lock` — an agent
+running git at the same moment cannot collide with one. They live under
+`refs/herdr-review-loop/`, invisible to `git branch` and `git log`. The last **5** runs per
+repository keep theirs; older refs are dropped at the start of a run so git can collect
+the objects. Runs in a directory that is not a git work tree simply have no diffs, and the
+findings remain readable.
 
 ## The review contract
 
@@ -101,9 +160,11 @@ loop errs toward another review. Findings are one per bullet:
 - [high|medium|low] path/to/file.ext:LINE — what is wrong — what to do about it
 ```
 
-The author must then rewrite `review-summary.md` with the compact record of applied,
-rejected, or deferred decisions. The loop stops if the author does not update that file —
-a round that changes nothing and records nothing is a round that would repeat forever.
+The author must then rewrite `review-summary.md` with the compact record of decisions, one
+per bullet, each beginning with `applied:`, `rejected:`, or `deferred:`, and a final
+`tests:` line recording whether the build and test suite were run. The loop stops if the
+author does not update that file — a round that changes nothing and records nothing is a
+round that would repeat forever.
 
 Both sessions are reset before their turns. The reviewer reads the current uncommitted
 diff and `review-summary.md`; the author reads the review, the summary, and the diff.
@@ -138,12 +199,27 @@ key = "prefix+alt+comma"
 type = "plugin_action"
 command = "herdr-review-loop.settings"
 description = "review loop settings"
+
+[[keys.command]]
+key = "prefix+alt+f"
+type = "plugin_action"
+command = "herdr-review-loop.finish"
+description = "finish review"
+
+[[keys.command]]
+key = "prefix+alt+h"
+type = "plugin_action"
+command = "herdr-review-loop.history"
+description = "review history"
 ```
 
-The panel uses `r` to start a review, `x` to cancel it, `s` for settings, and `q` to
-close. Settings use `j`/`k` or arrows to select, Enter to edit, `d` to restore a default,
-`s` to save, `x` to cancel the loop, and `q` to close. `stop` is safe from any pane. The
-panel is a detached process, so closing it never cancels a review in progress.
+The panel uses `r` to start a review, `x` to cancel it, `f` to finish one, `h` for
+history, `s` for settings, and `q` to close. Settings use `j`/`k` or arrows to select,
+Enter to edit, `d` to restore a default, `s` to save, `x` to cancel the loop, and `q` to
+close. History uses `j`/`k` to move, Enter to open a run and then its findings, `d` and
+`a` for diffs, `c` for a restore command, `esc` to go back, and `q` to close. `stop` is
+safe from any pane. The panel is a detached process, so closing it never cancels a review
+in progress.
 
 ## Configuration
 
@@ -174,10 +250,13 @@ Reset commands are built in for `claude` and `gemini` (`/clear`) and for `codex`
 | No reviewer found | The workspace has no second agent, or only agents of the author's own kind. Open one, or pin one with `reviewer_name`. |
 | The loop stops saying an agent is blocked | That agent is waiting on a question. Answer it, then run the loop again. |
 | A review never finishes | Raise `review_timeout` / `fix_timeout`, or cancel with `stop` from any pane. |
+| `finish` refuses | A loop still holds the run lock. `stop` it, then finish. |
+| History shows `—` for every round | The repository is not a git work tree, or the run's checkpoints have aged out of the retention window. |
 
 Logs live in the plugin state dir and are visible with
 `herdr plugin log list --plugin herdr-review-loop`; every verdict is archived under
-`history/<run-id>/iteration-NN.md`.
+`history/<run-id>/iteration-NN.md`, beside the run's `run.json` and, once finished, its
+`summary.md`.
 
 ## Migrating the Node config
 

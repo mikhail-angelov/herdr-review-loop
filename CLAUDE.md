@@ -16,9 +16,11 @@ state directory, where `report.json` accounts for every finding the run raised.
 
 [docs/SPEC-v2.md](docs/SPEC-v2.md) is normative for the artifact layout, the review contract, the
 configuration layers, the archive and the exit codes; [docs/SPEC.md](docs/SPEC.md) still describes
-everything v2 does not cover. Every task in SPEC-v2 §12 is built. The one open question is named in
-T7.2: the review command table was written against the shipped codex and claude binaries, and a live
-pane would still settle whether the in-pane `/review` takes the argument its CLI form documents.
+everything v2 does not cover. Every task in SPEC-v2 §12 is built, with one
+deliberate deviation recorded in T7.2: `claude` was taken out of the review command table, because
+its `/code-review` reviews by fanning out to subagents and reports outside the context of the
+session that ran it. The one open question is also named in T7.2: a live pane would still settle
+whether the in-pane `/review` takes the argument its CLI form documents.
 
 ## Build, test and lint
 
@@ -57,9 +59,11 @@ go test -run TestName ./internal/loop/
   - `policy.go` / `scope.go` — the round policy and what is under review, each turning configuration
     into the block the reviewer and the author are sent. The last `rounds` entry repeats forever.
   - `adapter.go` — kind → its own review command, plus the capture step that turns what the command
-    rendered into the host UI into `review.json`. A kind with no entry gets the built-in prompt,
-    which is the only place a review taxonomy of ours remains. Expect this table to rot when an
-    agent CLI moves; `review_command` overrides any kind, and `parse_fallback` events are the trail.
+    rendered into the host UI into `review.json`. A kind earns an entry only when its command
+    reviews in the pane and reports into that session's own context; everything else, `claude`
+    included, gets the built-in prompt, which is the only place a review taxonomy of ours remains.
+    Expect this table to rot when an agent CLI moves; `review_command` overrides any kind, and
+    `parse_fallback` events are the trail.
   - `archive.go` / `render.go` — the per-run archive and the single renderer `show` and the history
     pane both call.
   - `watchdog.go` — `WatchStall` cancels a phase whose agent has produced no observable output for

@@ -40,8 +40,7 @@ func Policy(rounds []config.Round, number int) RoundPolicy {
 }
 
 // The effort levels a round may ask for. They are the reviewers' own scale rather than one of
-// ours: where a CLI has a level flag the adapter passes it, and where it does not the level is
-// carried in the prompt instead. Only the transport differs.
+// ours, and always reach the reviewer as prompt text.
 const (
 	levelMax    = "max"
 	levelHigh   = "high"

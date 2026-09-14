@@ -419,11 +419,15 @@ a file, so that second step is what makes them data.
 | Kind | Command | Level |
 | --- | --- | --- |
 | `codex` | `/review` | carried in the command's instructions; it has no level argument |
-| `claude` | `/code-review`, `/security-review` | the command's own argument: `low`/`medium` narrow and high-confidence, `high`/`max` broad |
 | others | built-in prompt | in the prompt — the only place a review taxonomy of ours remains |
 
-`ultra` is deliberately never used: it is multi-agent, billed and user-triggered, and fan-out is out
-of scope for this loop.
+`claude` is not in that table, checked against Claude Code 2.1.236: its `/code-review` starts a
+review of its own that fans out to subagents, and fan-out is out of scope for this loop. The
+findings then live in those subagents and in the pane's UI rather than in the context of the session
+that ran the command, so the recording step has nothing dependable to write down, and the command
+resolves its own scope, which drops the round's instructions. A claude reviewer gets the built-in
+prompt, which asks one agent for the contract directly. Set `review_command.claude` if you have a
+build of that command that reviews in-pane and reports back into the session that ran it.
 
 The loop therefore carries no review taxonomy of its own. Your project's review standards belong in
 `CLAUDE.md` or `AGENTS.md`, where every review benefits from them and not only this one.

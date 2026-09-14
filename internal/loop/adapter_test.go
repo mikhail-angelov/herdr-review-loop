@@ -14,9 +14,6 @@ func TestCodexCarriesTheLevelInItsInstructions(t *testing.T) {
 	if !delegated {
 		t.Fatal("codex has a review command and should not fall back")
 	}
-	if native.Preamble != "" {
-		t.Fatalf("codex needs no preamble; its argument is free text: %q", native.Preamble)
-	}
 	if !strings.HasPrefix(native.Command, "/review ") {
 		t.Fatalf("command %q", native.Command)
 	}
@@ -31,43 +28,13 @@ func TestCodexCarriesTheLevelInItsInstructions(t *testing.T) {
 	}
 }
 
-func TestClaudeTakesTheLevelAsItsArgumentAndTheInstructionsFirst(t *testing.T) {
+// TestClaudeFallsBackToTheBuiltInPrompt records why that kind has no entry: its own review command
+// fans out to subagents, and the findings then live outside the context of the session that ran it,
+// which leaves the capture step nothing to serialize.
+func TestClaudeFallsBackToTheBuiltInPrompt(t *testing.T) {
 	rounds := []config.Round{{Level: levelMedium, Instructions: "only the public API surface"}}
-	settled := []Settled{{Round: 1, Action: ActionRejected, Title: "context leak", Note: "canceled in the defer above"}}
-	native, delegated := Adapt("claude", nil, Policy(rounds, 1), worktree, "/review.json", settled)
-	if !delegated {
-		t.Fatal("claude has a review command and should not fall back")
-	}
-	if native.Command != "/code-review medium" {
-		t.Fatalf("command %q, want the level as the command's own argument", native.Command)
-	}
-	for _, want := range []string{"only the public API surface", "already settled", "canceled in the defer above", "git diff"} {
-		if !strings.Contains(native.Preamble, want) {
-			t.Fatalf("the preamble is missing %q:\n%s", want, native.Preamble)
-		}
-	}
-}
-
-func TestAnUnknownLevelLandsInTheMiddleOfTheCommandsOwnScale(t *testing.T) {
-	for level, want := range map[string]string{
-		levelLow: "low", levelMedium: "medium", levelHigh: "high", levelMax: "max",
-		"ultra": "high", "": "high", "thorough": "high",
-	} {
-		native, _ := Adapt("claude", nil, Policy([]config.Round{{Level: level}}, 1), worktree, "/review.json", nil)
-		if native.Command != "/code-review "+want {
-			t.Errorf("level %q produced %q, want /code-review %s", level, native.Command, want)
-		}
-	}
-}
-
-// TestTheLoopNeverAsksForAMultiAgentReview guards §2.2: fan-out is out, and claude's own ultra is
-// billed and user-triggered, so the loop must never reach it however a round is configured.
-func TestTheLoopNeverAsksForAMultiAgentReview(t *testing.T) {
-	for _, level := range []string{"ultra", "ULTRA", levelMax, levelHigh} {
-		native, _ := Adapt("claude", nil, Policy([]config.Round{{Level: level}}, 1), worktree, "/review.json", nil)
-		if strings.Contains(strings.ToLower(native.Command), "ultra") {
-			t.Fatalf("level %q reached a multi-agent review: %q", level, native.Command)
-		}
+	if _, delegated := Adapt("claude", nil, Policy(rounds, 1), worktree, "/review.json", nil); delegated {
+		t.Fatal("claude was delegated to a review command of its own")
 	}
 }
 
@@ -85,12 +52,11 @@ func TestReviewCommandOverridesAnyKindKnownOrNot(t *testing.T) {
 	if !delegated || !strings.HasPrefix(native.Command, "/review ") {
 		t.Fatalf("an entry for an unknown kind should make it supported: %#v %v", native, delegated)
 	}
+	// claude has no entry of its own, so an override is how a build of its review command that
+	// reviews in-pane is put back in service
 	native, delegated = Adapt("claude", overrides, Policy([]config.Round{{Level: levelLow}}, 1), worktree, "/review.json", nil)
 	if !delegated || !strings.HasPrefix(native.Command, "/deep-review ") {
-		t.Fatalf("a known kind whose CLI has moved should follow the override: %#v", native)
-	}
-	if native.Preamble != "" {
-		t.Fatalf("an override is free text, so its instructions ride on the line: %q", native.Preamble)
+		t.Fatalf("an override should delegate the kind it names: %#v", native)
 	}
 	// an empty override turns the native path off and returns that kind to the built-in prompt
 	if _, delegated = Adapt("codex", overrides, Policy(nil, 1), worktree, "/review.json", nil); delegated {
@@ -100,8 +66,14 @@ func TestReviewCommandOverridesAnyKindKnownOrNot(t *testing.T) {
 
 func TestARoundMayNameADifferentCommand(t *testing.T) {
 	rounds := []config.Round{{Level: levelHigh, Command: "security-review"}}
-	native, _ := Adapt("claude", nil, Policy(rounds, 1), worktree, "/review.json", nil)
-	if native.Command != "/security-review high" {
+	native, delegated := Adapt("claude", nil, Policy(rounds, 1), worktree, "/review.json", nil)
+	if !delegated {
+		t.Fatal("the round's command should delegate a kind with no table entry")
+	}
+	if !strings.HasPrefix(native.Command, "/security-review ") {
 		t.Fatalf("command %q", native.Command)
+	}
+	if command := DescribeCommand("claude", nil, Policy(rounds, 1)); command != "/security-review" {
+		t.Fatalf("described command %q", command)
 	}
 }

@@ -418,26 +418,16 @@ func (r Run) requestReview(ctx context.Context, state *session, reviewer herdr.A
 		}
 		return r.submit(ctx, state, reviewer, prompt, number, PhaseReview)
 	}
-	turns := []string{native.Preamble, native.Command, native.Capture}
-	if err := state.archive.PromptAttempt(number, PhaseReview, attempt, false, strings.Join(nonEmpty(turns), "\n\n---\n\n")); err != nil {
+	turns := []string{native.Command, native.Capture}
+	if err := state.archive.PromptAttempt(number, PhaseReview, attempt, false, strings.Join(turns, "\n\n---\n\n")); err != nil {
 		return err
 	}
-	for _, turn := range nonEmpty(turns) {
+	for _, turn := range turns {
 		if err := r.submit(ctx, state, reviewer, turn, number, PhaseReview); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func nonEmpty(values []string) []string {
-	kept := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			kept = append(kept, value)
-		}
-	}
-	return kept
 }
 
 // acceptReview assigns the ids and fingerprints the author decides on, writes them back where the

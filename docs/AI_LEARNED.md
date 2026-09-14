@@ -231,9 +231,8 @@ Write the agent-kind → review-command table without a live pane to confirm eac
 
 `codex review --help` names `--uncommitted`, `--base`, `--commit` and `[PROMPT]` with no level flag;
 the codex TUI binary lists `/review - review any changes and find issues` and the prompt template
-"Review the current code changes (staged, unstaged, and untracked files)"; the Claude Code binary
-carries `/code-review`, `/security-review`, and the rule that `ultra` is user-triggered and billed.
-`TestANativeReviewerRunsItsOwnCommandThenRecordsIt` covers codex, claude and a kind with no command.
+"Review the current code changes (staged, unstaged, and untracked files)".
+`TestANativeReviewerRunsItsOwnCommandThenRecordsIt` covers codex and two kinds with no command.
 
 ### Failure pattern avoided
 
@@ -242,11 +241,27 @@ sends the command and then reads `review.json` finds nothing. The capture step i
 an option.
 
 A slash command also occupies its whole line, so a kind whose argument slot is already its level has
-nowhere to put the round's instructions — sending them appended to `/code-review high` would send
-the level and drop the instructions silently. Those kinds get a preamble turn instead.
+nowhere to put the round's instructions — appending them to such a command sends the level and drops
+the instructions silently. The first fix was a preamble turn before the command; it was taken out
+with the claude entry that needed it (below). A command whose argument is not free text is not one
+this loop can delegate to.
+
+### What the claude entry cost, and why it is gone
+
+Claude Code 2.1.236's `/code-review` reviews by fanning out to subagents rather than in the pane.
+Two things follow, and the second is the one that matters: fan-out is out of scope per §2.2, and the
+findings end up in those subagents and in the host UI rather than in the context of the session that
+ran the command — so the capture turn, whose whole premise is "the findings are already in this
+agent's context", serializes nothing dependable. The command also resolves its own scope, which
+means the preamble carrying the round's scope and level was being dropped on the floor.
+
+The lesson is narrower than "adapters rot": delegation is safe only when the command reviews *in the
+session the loop is talking to*. A command that dispatches the work elsewhere looks identical from
+the composer and breaks the contract silently — no error, just an empty or invented `review.json`
+and a trail of `parse_fallback`. Check where the findings land, not just that the command exists.
 
 ### Ruled-out approaches
 
-- Tried sending codex's instructions as a preamble turn like claude's; codex's `/review` runs in a
+- Tried sending codex's instructions as a preamble turn before the command; codex's `/review` runs in a
   separate review thread, so the main thread's preceding turn is not reliably in its context. Its
   instructions go in the command argument, which is what its CLI form documents.

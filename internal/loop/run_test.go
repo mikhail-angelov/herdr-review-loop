@@ -750,8 +750,9 @@ func TestANativeReviewerRunsItsOwnCommandThenRecordsIt(t *testing.T) {
 		wantOne   bool
 	}{
 		{kind: "codex", wantTurns: []string{"/review "}},
-		{kind: "claude", wantTurns: []string{"/code-review high"}},
 		{kind: "gemini", wantOne: true},
+		// claude has no entry of its own, so it takes the built-in prompt like any other kind
+		{kind: "claude", wantOne: true},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
 			agents := pairedAgents()
@@ -791,7 +792,7 @@ func TestANativeReviewerRunsItsOwnCommandThenRecordsIt(t *testing.T) {
 
 func TestTheDelegatedRequestIsArchivedWholeIncludingEveryTurn(t *testing.T) {
 	agents := pairedAgents()
-	agents[1].Kind = "claude"
+	agents[0].Kind, agents[1].Kind = "opencode", "codex"
 	client := &runClient{agents: agents, reviews: []string{`{"status":"clean","findings":[]}`}}
 	run, _, state := newRun(t, client, quickValues())
 	if err := run.Execute(context.Background(), false); err != nil {
@@ -801,7 +802,7 @@ func TestTheDelegatedRequestIsArchivedWholeIncludingEveryTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"git diff", "/code-review high", "record the review you just produced"} {
+	for _, want := range []string{"git diff", "/review ", "record the review you just produced"} {
 		if !strings.Contains(string(archived), want) {
 			t.Fatalf("the archived request is missing %q:\n%s", want, archived)
 		}

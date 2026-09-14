@@ -472,7 +472,7 @@ structured findings and their own verification pass:
 | Kind | Command | Scoping | Level |
 |---|---|---|---|
 | `codex` | `codex review [PROMPT]` | `--uncommitted` (`--base`, `--commit` exist and are unused, §9) | no flag exists — carried in `[PROMPT]`; custom instructions as argument or stdin; verified against codex-cli 0.147.0 |
-| `claude` | `/code-review [low\|medium\|high\|max]`, `/security-review` | diff, PR, branch, path | the command's own argument: `low`/`medium` narrow and high-confidence, `high`/`max` broad; `ultra` is multi-agent |
+| `claude` | none — see T7.2 | — | its `/code-review` reviews by fanning out to subagents, which §2.2 rules out, and reports outside the context of the session that ran it |
 | others | built-in fallback prompt | scope from §9 | in the prompt — one prompt, not a library, the only place a taxonomy remains |
 
 `--uncommitted` is literally the loop's default scope, so that mapping is direct rather
@@ -828,23 +828,30 @@ reads both file kinds.
 **T7.2 — Per-kind adapter `feat`** *deps: T7.1*
 The kind → review command table, the capture step, `review_command` overrides, the fallback
 prompt for kinds with no native command. §4.3, §6.1, §6.4
-**Done:** a claude reviewer runs its own review command and writes conforming
-`review.json`; the same for codex; an unknown kind falls back and still produces a valid
+**Done:** a codex reviewer runs its own review command and writes conforming `review.json`;
+a kind with no entry — claude and anything unknown — falls back and still produces a valid
 round. The in-pane form of each command is confirmed by hand before the table is written.
 
-The table was written against the shipped binaries — codex-cli 0.147.0 and Claude Code 2.1.224 —
-rather than from memory: codex's in-pane `/review` ("review any changes and find issues", default
-scope "the current code changes (staged, unstaged, and untracked files)") takes free text and has no
-level argument; claude's `/code-review` takes `low|medium|high|max` as its own argument and
-`/security-review` is a separate command. `ultra` is excluded deliberately — it is multi-agent,
-billed and user-triggered, and §2.2 puts fan-out out of scope.
+The table was written against the shipped binaries rather than from memory: codex's in-pane
+`/review` ("review any changes and find issues", default scope "the current code changes (staged,
+unstaged, and untracked files)") takes free text and has no level argument, which is codex-cli
+0.147.0's behavior and this loop's scope exactly.
 
-Two consequences fell out of that check and are built in:
+One consequence fell out of that check and is built in: the command renders its findings into the
+host UI rather than to a file, so the capture step is not optional.
 
-- Because a slash command occupies its whole line, a kind whose argument slot is its level has
-  nowhere to put the round's instructions. Those kinds get a preamble turn first. The adapter says
-  so per kind rather than pretending to one transport, which is §6.1's own rule.
-- Both commands render findings into the host UI, so the capture step is not optional for either.
+**Deviation, checked against Claude Code 2.1.236:** `claude` has no entry. Its `/code-review` no
+longer reviews in the pane — it starts a review of its own that fans out to subagents, which §2.2
+puts out of scope. The contract breaks with it: the findings live in those subagents and in the
+host UI rather than in the context of the session that ran the command, so the capture step has
+nothing dependable to serialize, and the command resolves its own scope, which drops the round's
+instructions instead of narrowing by them. A claude reviewer therefore takes the built-in prompt of
+§6.4, which asks one agent for the contract directly. `review_command.claude` puts a command back in
+service for anyone whose build reviews in-pane and reports into that session.
+
+That deviation is also why an entry now carries only a command whose argument is free text: a kind
+whose argument slot is its own effort level has nowhere to put the round's instructions, and the
+preamble turn that once carried them for such a kind went with the entry that needed it.
 
 **Still unconfirmed in a live pane:** whether the in-pane `/review` accepts the custom-instruction
 argument its CLI form documents. If it does not, codex's round instructions are ignored rather than

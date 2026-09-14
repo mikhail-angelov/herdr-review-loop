@@ -15,51 +15,43 @@ import (
 // keeps a markdown fallback and a reformat turn, and why parse_fallback is a recorded event: a
 // kind whose adapter has rotted leaves a trail of them in events.jsonl.
 type Adapter struct {
-	// Command is the in-pane command, typed into the agent's composer as one line.
+	// Command is the in-pane command, typed into the agent's composer as one line. Its argument is
+	// free text, so the round's instructions ride along in it; a command that wants its argument
+	// for something else is not one this loop can delegate to.
 	Command string
-	// LevelArgument means the command's own argument is the effort level, which leaves nowhere on
-	// that line for the round's instructions. Where it is false the argument is free text and the
-	// instructions ride along in it.
-	LevelArgument bool
-	// Levels are the values the command accepts. A round asking for something outside this set is
-	// mapped to the middle of it rather than refused: the scale belongs to the agent, and a level
-	// this build has not heard of is likelier new than wrong.
-	Levels []string
 }
 
 // adapters is the whole table. It is small on purpose, and review_command overrides any entry for
 // any kind, known or not: a known kind whose CLI has moved is the common case, and an entry for an
 // unknown kind is what makes that kind supported without a release.
 //
-// Verified against codex-cli 0.147.0 and Claude Code 2.1.224:
-//   - codex's in-pane `/review` reviews "the current code changes (staged, unstaged, and untracked
-//     files)", which is this loop's worktree scope exactly. It takes free-text instructions and has
-//     no level argument, so the round's level is expressed in that text.
-//   - claude's `/code-review` takes its effort level as its own argument — low and medium narrow to
-//     high-confidence findings, high and max broaden — which leaves the round's instructions to a
-//     preceding turn. `ultra` is deliberately absent: it is multi-agent, billed, and user-triggered,
-//     and fan-out is out of scope for this loop.
+// Verified against codex-cli 0.147.0: codex's in-pane `/review` reviews "the current code changes
+// (staged, unstaged, and untracked files)", which is this loop's worktree scope exactly. It takes
+// free-text instructions and has no level argument, so the round's level is expressed in that text.
+// It renders its findings into the host UI rather than to a file, which is what the capture step is
+// for.
 //
-// Both render their findings into the host UI rather than to a file, which is what the capture step
-// is for.
+// claude is deliberately not in this table, checked against Claude Code 2.1.236. Its `/code-review`
+// starts a review of its own that fans out to subagents, which §2.2 puts out of scope, and it costs
+// what fan-out costs. Worse for the contract: the findings then live in those subagents and in the
+// host UI rather than in the pane session's own context, so the capture step has nothing dependable
+// to serialize, and the command resolves its own scope, which silently drops the round's
+// instructions. The built-in prompt asks one agent for the contract directly, so a claude reviewer
+// takes that path. Put `review_command.claude` back in configuration if a build of that command
+// reviews in-pane and reports into the session that ran it.
 //
 // One detail is taken from the documented CLI rather than from a live pane: `codex review [PROMPT]`
 // accepts custom instructions as its argument, and the in-pane `/review` is assumed to do the same.
 // If it does not, that kind's instructions are ignored rather than lost — the review still runs at
 // codex's own default scope, which is this loop's, and the capture step still records it.
 var adapters = map[string]Adapter{
-	"codex":  {Command: "/review"},
-	"claude": {Command: "/code-review", LevelArgument: true, Levels: []string{levelLow, levelMedium, levelHigh, levelMax}},
+	"codex": {Command: "/review"},
 }
 
 // NativeReview is one round's request to a reviewer that has its own review command, as the turns
-// it has to be sent in. A slash command occupies its whole line, so a kind whose argument slot is
-// already its level has nowhere to put the round's instructions; the loop sends them first, in the
-// same session, rather than pretending every kind has one transport.
+// it has to be sent in.
 type NativeReview struct {
-	// Preamble is sent before the command when it is non-empty.
-	Preamble string
-	// Command is the line typed into the composer.
+	// Command is the line typed into the composer, the round's instructions in its argument.
 	Command string
 	// Capture is sent once the command's turn has settled. The findings are already in the agent's
 	// context by then, so serializing them is cheap and lossless.
@@ -70,23 +62,12 @@ type NativeReview struct {
 // review command of its own — those fall back to the built-in prompt, which is the only place a
 // review taxonomy of ours remains.
 func Adapt(kind string, overrides map[string]string, policy RoundPolicy, scope Scope, reviewPath string, settled []Settled) (NativeReview, bool) {
-	adapter, known := adapterFor(kind, overrides)
-	if !known || adapter.Command == "" {
+	command, delegated := resolveCommand(kind, overrides, policy)
+	if !delegated {
 		return NativeReview{}, false
 	}
-	command := adapter.Command
-	if policy.Command != "" {
-		command = slashed(policy.Command)
-	}
-	instructions := nativeInstructions(policy, scope, settled)
-	if adapter.LevelArgument {
-		return NativeReview{
-			Preamble: instructions,
-			Command:  strings.TrimSpace(command + " " + adapter.level(policy.Level)),
-			Capture:  CaptureReviewPrompt(reviewPath),
-		}, true
-	}
-	return NativeReview{Command: strings.TrimSpace(command + " " + oneLine(instructions)), Capture: CaptureReviewPrompt(reviewPath)}, true
+	instructions := oneLine(nativeInstructions(policy, scope, settled))
+	return NativeReview{Command: strings.TrimSpace(command + " " + instructions), Capture: CaptureReviewPrompt(reviewPath)}, true
 }
 
 // adapterFor applies the per-kind override before the table, so a CLI that has moved is one
@@ -98,23 +79,23 @@ func adapterFor(kind string, overrides map[string]string) (Adapter, bool) {
 		if command == "" {
 			return Adapter{}, false
 		}
-		// an override is free text, so its level cannot be assumed to be a separate argument
 		return Adapter{Command: slashed(command)}, true
 	}
 	adapter, known := adapters[kind]
 	return adapter, known
 }
 
-// level maps a round's level onto the ones this command accepts. An unknown level lands in the
-// middle of the command's own scale rather than being refused.
-func (a Adapter) level(level string) string {
-	if len(a.Levels) == 0 {
-		return ""
+// resolveCommand gives the round's command precedence over the kind's default or override. Naming
+// a command for a round is enough to delegate it, even when the kind has no table entry.
+func resolveCommand(kind string, overrides map[string]string, policy RoundPolicy) (string, bool) {
+	if policy.Command != "" {
+		return slashed(policy.Command), true
 	}
-	if slices.Contains(a.Levels, level) {
-		return level
+	adapter, known := adapterFor(kind, overrides)
+	if !known || adapter.Command == "" {
+		return "", false
 	}
-	return a.Levels[len(a.Levels)/2]
+	return adapter.Command, true
 }
 
 // slashed keeps a configured command usable whether or not the user typed the leading slash. A
@@ -144,16 +125,9 @@ func oneLine(text string) string {
 // DescribeCommand names the command a kind would run for a round, for the manifest, the dry run
 // and `config`. It is the same resolution the run uses, so what those three print is what happens.
 func DescribeCommand(kind string, overrides map[string]string, policy RoundPolicy) string {
-	adapter, known := adapterFor(kind, overrides)
-	if !known || adapter.Command == "" {
+	command, delegated := resolveCommand(kind, overrides, policy)
+	if !delegated {
 		return "built-in review prompt"
-	}
-	command := adapter.Command
-	if policy.Command != "" {
-		command = slashed(policy.Command)
-	}
-	if adapter.LevelArgument {
-		return strings.TrimSpace(command + " " + adapter.level(policy.Level))
 	}
 	return command
 }

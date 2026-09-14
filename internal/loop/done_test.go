@@ -229,8 +229,8 @@ func TestTheLoopCarriesNoReviewTaxonomyOfItsOwn(t *testing.T) {
 		"fix":    FixPrompt(worktree, defaultPolicy(t, 1), "/review.json", "/decisions.json", []string{"r01-1"}),
 		"schema": reviewSchema + "\n" + reviewRules,
 	}
-	native, _ := Adapt("claude", nil, defaultPolicy(t, 1), worktree, "/review.json", nil)
-	prompts["native preamble"] = native.Preamble
+	native, _ := Adapt("codex", nil, defaultPolicy(t, 1), worktree, "/review.json", nil)
+	prompts["native command"] = native.Command
 	prompts["capture"] = native.Capture
 	for name, prompt := range prompts {
 		lowered := strings.ToLower(prompt)

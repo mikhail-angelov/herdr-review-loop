@@ -2,10 +2,13 @@ package main
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mikhail-angelov/herdr-review-loop/internal/herdr"
 	"github.com/mikhail-angelov/herdr-review-loop/internal/loop"
 )
 
@@ -70,5 +73,54 @@ func TestRunTitleIdentifiesTheRepository(t *testing.T) {
 	}})
 	if !strings.Contains(title, "/work/repository-a") {
 		t.Fatalf("run title does not identify its repository: %q", title)
+	}
+}
+
+// fakeHerdr is a herdr that records every invocation and answers a pane open with a pane id, so a
+// test can say not only that a pane was opened but that the user was taken to it.
+func fakeHerdr(t *testing.T, log string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "herdr")
+	body := "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >>" + log + "\n" +
+		"if [[ \"$*\" == *'pane open'* ]]; then printf '%s\\n' '{\"result\":{\"plugin_pane\":{\"pane\":{\"pane_id\":\"pane-7\",\"tab_id\":\"tab-9\"}}}}'; else printf '%s\\n' '{\"result\":{}}'; fi\n"
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestOpenPaneTakesTheUserToTheTabItOpened(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "calls")
+	client := herdr.Client{Binary: fakeHerdr(t, log)}
+	var environment herdr.Environment
+	environment.Context.FocusedPaneID, environment.Context.WorkspaceID = "pane-1", "ws-1"
+
+	for _, entrypoint := range []string{"findings", "diff"} {
+		if err := openPane(t.Context(), client, environment, entrypoint); err != nil {
+			t.Fatalf("%s: %v", entrypoint, err)
+		}
+	}
+	// the panel is the one pane nobody asked for, so it must not move the user
+	if err := openPane(t.Context(), client, environment, "panel"); err != nil {
+		t.Fatal(err)
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(calls)
+	// a pane in a tab of its own is reached by focusing the tab: the terminal follows the tab it
+	// was told to show, and a pane focused inside a tab nobody switched to leaves the user put
+	if got := strings.Count(text, "tab focus tab-9"); got != 2 {
+		t.Fatalf("findings and diff focused their tab %d time(s), want 2:\n%s", got, text)
+	}
+	if strings.Contains(text, "plugin pane focus pane-7") {
+		t.Fatalf("a tab pane was focused by pane instead of by tab:\n%s", text)
+	}
+	if !strings.Contains(text, "--placement tab") || !strings.Contains(text, "--workspace ws-1") {
+		t.Fatalf("the tabs were not opened as tabs in the workspace:\n%s", text)
+	}
+	if strings.Contains(text, "entrypoint panel --placement split --direction right --target-pane pane-1 --focus") {
+		t.Fatalf("the panel took focus:\n%s", text)
 	}
 }

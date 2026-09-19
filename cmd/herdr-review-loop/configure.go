@@ -48,6 +48,7 @@ func configCommand(app application, args []string) error {
 	if scopeErr != nil {
 		lines = append(lines, "", "warning: "+scopeErr.Error())
 	}
+	scope = resolveScope(app, scope)
 	lines = append(lines, "", "rounds  ("+resolution.Layers["rounds"]+")")
 	for round := 1; round <= min(resolution.Values.MaxIterations, max(len(resolution.Values.Rounds), 1)); round++ {
 		policy := loop.Policy(resolution.Values.Rounds, round)
@@ -55,7 +56,7 @@ func configCommand(app application, args []string) error {
 		lines = append(lines, fmt.Sprintf("  %d  %s — %s", round, command, policy.Describe()))
 	}
 	lines = append(lines, "", "review commands")
-	lines = append(lines, describeReviewCommands(resolution.Values)...)
+	lines = append(lines, describeReviewCommands(resolution.Values, scope)...)
 	lines = append(lines, "", "profiles")
 	for _, profile := range config.Profiles(config.Sources{User: app.environment.ConfigDir, Project: projectLayer(app.environment)}) {
 		lines = append(lines, "  "+describeProfile(profile))
@@ -67,6 +68,30 @@ func configCommand(app application, args []string) error {
 		return fmt.Errorf("failed to write the resolved configuration: %w", err)
 	}
 	return nil
+}
+
+// resolveScope settles `auto` the way a run settles it, against this repository, because which
+// scope it lands on is what decides whether a kind's own review command may be used at all.
+// Without it `config` promises a native command for a branch the run would send the built-in
+// prompt for. It is best-effort: a repository the loop cannot reach leaves the scope as parsed,
+// which is what a run there would fail on anyway.
+func resolveScope(app application, scope loop.Scope) loop.Scope {
+	// a document scope is the one that needs a run directory to resolve, and the one whose
+	// command does not depend on the resolution
+	if scope.Text() {
+		return scope
+	}
+	repository, err := app.environment.Repository()
+	if err != nil {
+		return scope
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	resolved, err := scope.Resolve(ctx, nil, repository)
+	if err != nil {
+		return scope
+	}
+	return resolved
 }
 
 func describeProfile(profile config.Profile) string {
@@ -86,9 +111,8 @@ func describeProfile(profile config.Profile) string {
 // describeReviewCommands names the command every kind the loop knows would run for round 1, so
 // the same resolution the run uses is what a reader sees. Kinds with no entry are not listed
 // individually — that they fall back is stated once.
-func describeReviewCommands(values config.Values) []string {
+func describeReviewCommands(values config.Values, scope loop.Scope) []string {
 	policy := loop.Policy(values.Rounds, 1)
-	scope, _ := loop.ParseScope(values.Scope)
 	kinds := loop.Kinds(values.ReviewCommand)
 	lines := make([]string, 0, len(kinds)+1)
 	for _, kind := range kinds {

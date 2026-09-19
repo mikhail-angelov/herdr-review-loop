@@ -9,8 +9,9 @@ all: prep build
 build:
 	bash bin/ensure-binary.sh --build
 
+# no cache-buster: the tests are hermetic (every one of them keeps its state in t.TempDir), so an
+# unchanged package has nothing to re-prove and Go's own cache keys on what went into it
 test:
-	go clean -testcache
 	go test -race -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 	@rm -f coverage.out
@@ -39,18 +40,17 @@ install-plugin: build
 release: SHELL := /bin/bash
 release:
 	@set -euo pipefail; \
-	last_tag=""; \
-	while IFS= read -r tag; do \
-		if [[ "$$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$$ ]]; then last_tag="$$tag"; break; fi; \
-	done < <(git tag --sort=-version:refname); \
-	if [[ -z "$$last_tag" ]]; then \
-		echo "No vMAJOR.MINOR.PATCH tag found" >&2; \
+	version="$(VERSION)"; \
+	if [[ ! "$$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$$ ]]; then \
+		echo "herdr-plugin.toml has no MAJOR.MINOR.PATCH version" >&2; \
 		exit 1; \
 	fi; \
-	version="$${last_tag#v}"; \
-	patch="$${version##*.}"; \
-	next_tag="v$${version%.*}.$$((10#$$patch + 1))"; \
-	echo "Releasing $$next_tag"; \
-	git tag -a "$$next_tag" -m "Release $$next_tag"; \
+	tag="v$$version"; \
+	if git rev-parse -q --verify "refs/tags/$$tag" >/dev/null; then \
+		echo "$$tag is already released; bump version in herdr-plugin.toml first" >&2; \
+		exit 1; \
+	fi; \
+	echo "Releasing $$tag"; \
+	git tag -a "$$tag" -m "Release $$tag"; \
 	git push origin HEAD; \
-	git push origin "$$next_tag"
+	git push origin "$$tag"

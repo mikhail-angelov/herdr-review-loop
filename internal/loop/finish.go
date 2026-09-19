@@ -82,7 +82,7 @@ func Finish(stateDir, workspace, repository string) (FinishResult, error) {
 	}
 	// the changes are being handed on, so the next review starts from the code rather than from
 	// the arguments this one had about it
-	ClearSettled(stateDir)
+	ClearSettled(stateDir, repository)
 	present, err := runDir.Exists()
 	if err != nil {
 		return FinishResult{}, err

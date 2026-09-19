@@ -122,7 +122,7 @@ func (p *settingsPane) edit(key string) {
 			p.input = string(runes[:len(runes)-1])
 		}
 	default:
-		if len(key) == 1 && key[0] >= 32 {
+		if printable(key) {
 			p.input += key
 		}
 	}

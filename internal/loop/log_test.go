@@ -103,13 +103,41 @@ func TestLogDocumentCarriesTheDetailThePanelHasToClip(t *testing.T) {
 	if err := archive.Event(1, PhaseReview, EventStall, detail); err != nil {
 		t.Fatal(err)
 	}
-	document := LogDocument(state, "/repo")
+	document := LogDocument(state, "/repo", MarkdownStyle())
 	for _, want := range []string{detail, "review unreadable", "/repo", "events", "journal"} {
 		if !strings.Contains(document, want) {
 			t.Fatalf("the log document is missing %q:\n%s", want, document)
 		}
 	}
-	if got := LogDocument(state, "/elsewhere"); strings.Contains(got, detail) {
+	if got := LogDocument(state, "/elsewhere", MarkdownStyle()); strings.Contains(got, detail) {
 		t.Fatalf("another repository's run leaked into the log: %s", got)
+	}
+}
+
+// The log pane and the findings pane are read side by side, so the log takes its decoration from
+// the same Style — and an event is decorated by which event it was, not by where it sits.
+func TestLogDocumentDecoratesEachEventByItsOwnName(t *testing.T) {
+	state := t.TempDir()
+	log := Log{StateDir: state}
+	if err := log.WriteRun(RunRecord{ID: "2026-08-09T12-00-00Z", Repository: "/repo", Rounds: 1, Outcome: "clean"}); err != nil {
+		t.Fatal(err)
+	}
+	archive := openArchive(t, state, "2026-08-09T12-00-00Z")
+	for _, event := range []string{EventPhaseStart, EventStall, EventPhaseDone} {
+		if err := archive.Event(1, PhaseReview, event, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	style := MarkdownStyle()
+	style.Event = func(event, text string) string { return "<" + event + ">" + text }
+	document := LogDocument(state, "/repo", style)
+	for _, want := range []string{"<" + EventPhaseStart + ">", "<" + EventStall + ">", "<" + EventPhaseDone + ">"} {
+		if !strings.Contains(document, want) {
+			t.Fatalf("the log document is missing %q:\n%s", want, document)
+		}
+	}
+	// the headings and the journal are the document's own, never an event's
+	if strings.Contains(document, "<>") {
+		t.Fatalf("a line that is not an event was decorated as one:\n%s", document)
 	}
 }

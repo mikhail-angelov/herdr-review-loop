@@ -276,28 +276,82 @@ type PaneLayout struct {
 	} `json:"panes"`
 }
 
-// PluginPaneOpen splits a pane and starts the panel entrypoint in it, returning the new pane id.
-func (c Client) PluginPaneOpen(ctx context.Context, target, author string) (string, error) {
-	raw, err := c.Call(ctx, "plugin", "pane", "open", "--plugin", "herdr-review-loop", "--entrypoint", "panel",
-		"--placement", "split", "--direction", "right", "--target-pane", target, "--no-focus",
-		"--env", "HERDR_REVIEW_LOOP_AUTHOR="+author)
+// PaneOpening is where one of this plugin's panes goes when it is opened. It is a struct rather
+// than a list of arguments because the panel's keys and Herdr's own action menu open the same
+// panes, and a placement described in two places drifts.
+type PaneOpening struct {
+	Entrypoint string
+	Placement  string
+	Direction  string
+	Target     string
+	Workspace  string
+	Focus      bool
+	Env        []string
+}
+
+// Pane is a pane Herdr made, named by both of the things a caller may have to focus: the pane
+// itself, and the tab it was put in.
+type Pane struct {
+	ID    string
+	TabID string
+}
+
+// PluginPaneOpen opens one of this plugin's panes and returns the pane it made.
+//
+// The ids are the point. `--focus` is answered while the pane is still being built, so a caller
+// that means to take the user there asks again once there is a pane to name — through
+// PluginPaneFocus for a pane sharing the caller's tab, and TabFocus for one in a tab of its own.
+func (c Client) PluginPaneOpen(ctx context.Context, opening PaneOpening) (Pane, error) {
+	args := []string{"plugin", "pane", "open", "--plugin", "herdr-review-loop", "--entrypoint", opening.Entrypoint}
+	// an empty field is one the manifest already answers, and passing it empty would override it
+	args = appendFlag(args, "--placement", opening.Placement)
+	args = appendFlag(args, "--direction", opening.Direction)
+	args = appendFlag(args, "--target-pane", opening.Target)
+	args = appendFlag(args, "--workspace", opening.Workspace)
+	if opening.Focus {
+		args = append(args, "--focus")
+	} else {
+		args = append(args, "--no-focus")
+	}
+	for _, value := range opening.Env {
+		args = append(args, "--env", value)
+	}
+	raw, err := c.Call(ctx, args...)
 	if err != nil {
-		return "", err
+		return Pane{}, err
 	}
 	result, err := decode[struct {
 		PluginPane struct {
 			Pane struct {
 				PaneID string `json:"pane_id"`
+				TabID  string `json:"tab_id"`
 			} `json:"pane"`
 		} `json:"plugin_pane"`
 	}](raw, "plugin pane open")
 	if err != nil {
-		return "", err
+		return Pane{}, err
 	}
 	if result.PluginPane.Pane.PaneID == "" {
-		return "", errors.New("plugin pane open returned no pane id")
+		return Pane{}, errors.New("plugin pane open returned no pane id")
 	}
-	return result.PluginPane.Pane.PaneID, nil
+	return Pane{ID: result.PluginPane.Pane.PaneID, TabID: result.PluginPane.Pane.TabID}, nil
+}
+
+func appendFlag(args []string, flag, value string) []string {
+	if value == "" {
+		return args
+	}
+	return append(args, flag, value)
+}
+
+// PluginPanelOpen splits a pane and starts the panel beside it. It is the one pane opened without
+// focus: nobody asked for it, so it must not take the user's place.
+func (c Client) PluginPanelOpen(ctx context.Context, target, author string) (string, error) {
+	pane, err := c.PluginPaneOpen(ctx, PaneOpening{
+		Entrypoint: "panel", Placement: "split", Direction: "right", Target: target,
+		Env: []string{"HERDR_REVIEW_LOOP_AUTHOR=" + author},
+	})
+	return pane.ID, err
 }
 
 // PaneLayout returns the geometry of the window holding the given pane.
@@ -318,8 +372,17 @@ func (c Client) PaneResize(ctx context.Context, pane, direction string, amount f
 	return err
 }
 
-// PluginPaneFocus moves terminal focus to a plugin pane.
+// PluginPaneFocus moves terminal focus to a plugin pane. It moves the user only within the tab
+// they are already looking at: see TabFocus for one that is not.
 func (c Client) PluginPaneFocus(ctx context.Context, pane string) error {
 	_, err := c.Call(ctx, "plugin", "pane", "focus", pane)
+	return err
+}
+
+// TabFocus shows a tab. Focusing a pane marks it focused in the session, but the terminal follows
+// a tab of its own accord only when it is the tab that was focused — so a pane opened into a new
+// tab is reached by naming the tab, never only the pane.
+func (c Client) TabFocus(ctx context.Context, tab string) error {
+	_, err := c.Call(ctx, "tab", "focus", tab)
 	return err
 }

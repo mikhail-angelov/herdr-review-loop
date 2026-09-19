@@ -81,8 +81,10 @@ go test -run TestName ./internal/loop/
     included, gets the built-in prompt, which is the only place a review taxonomy of ours remains.
     Expect this table to rot when an agent CLI moves; `review_command` overrides any kind, and
     `parse_fallback` events are the trail.
-  - `archive.go` / `render.go` — the per-run archive and the single renderer `show` and the history
-    pane both call. `log.go`'s `LogDocument` is the panel's feed at full width, for the pager: the
+  - `archive.go` / `render.go` — the per-run archive and the single renderer `show` and the panes
+    both call. `Render` walks a round once and decorates it through a `Style`: `MarkdownStyle` is
+    the markers `show` writes, and `cmd`'s `paneStyle` is the terminal's colors. One walk, because
+    a findings pane that read differently from `show` would be a second document to keep in step. `log.go`'s `LogDocument` is the panel's feed at full width, for the pager: the
     panel clips every event to one line of a narrow pane, and the detail is usually the point.
   - `scope.go`'s `PanelScope` is what the panel shows before a run: the scope, resolved far enough
     to name what it compares against, and a diffstat. It is best-effort and never fails — a scope
@@ -110,19 +112,31 @@ go test -run TestName ./internal/loop/
   `stop` has to work even when `config.json` is broken. `Save` merges into the existing file rather
   than replacing it, so a save from the pane never drops a hand-written `rounds`.
 - `internal/ui` — the panes (panel, settings, history) over a small raw-mode terminal, plus the
-  findings and diff panes, which are the user's own pager over what `view` renders, each in a tab of
-  its own. Each falls back to a plain-text dump when its file is not a TTY. The panel redraws on a
+  findings, diff and log panes, which are the user's own pager over what `view` renders, each in a
+  tab of its own. A pane in a tab of its own is taken to by focusing the *tab*, never the pane: the
+  terminal changes what it shows for a tab that was focused, and a plugin pane focused inside a tab
+  nobody switched to leaves the user exactly where they were. Each falls back to a plain-text dump
+  when its file is not a TTY. The panel redraws on a
   Herdr event when there is one and on its own tick when there is not; it holds no loop state, so
   closing it cancels nothing. It shows only its own repository's runs and only a loop its own
   workspace owns: the state directory is shared by every space the plugin runs in.
   `style.go` holds the only styling: color says what a state means — green settled, cyan working,
   yellow waiting for a person, red blocked or failed — and `Keys` styles every pane's footer, so a
-  key looks the same wherever it is offered. Styling is applied *after* clipping, always: an escape
+  key looks the same wherever it is offered. The findings and diff panes borrow the same palette
+  through `cmd`'s `paneStyle`, and `NO_COLOR` turns all of it off; `show` is never colored, so a
+  redirected round is the same bytes it always was. The log pane takes that same `Style`, an event
+  decorated by the level `feedLevel` gives it, so a stall the panel prints in red is red there too. Styling is applied *after* clipping, always: an escape
   sequence is not a column and `Clip` counts runes.
   `tui.go`'s `shortcut` is what every pane matches keys against — the Latin letter engraved on the
   physical key that was pressed, lower case. A terminal delivers characters, never scancodes, so a
   layout is a translation table; adding one is a pair of strings, never a branch per key.
-- `bin/*.sh` — the entry points named by `herdr-plugin.toml`.
+- `bin/*.sh` — the entry points named by `herdr-plugin.toml`. Every one of them goes through
+  `run.sh`, which is where a binary left over from the version before is replaced rather than run:
+  an upgrade changes the manifest and leaves the binary beside it untouched, and nothing else in the
+  flow would notice. A binary that cannot be replaced is still run, with a warning — a plugin doing
+  the old thing beats one doing nothing. `ensure-binary.sh` builds from the plugin root, to a
+  private name it renames into place, because the caller's directory is whatever pane it started in
+  and two panes starting at once are two writers of the file one of them is about to exec.
 
 ## Conventions
 
@@ -140,7 +154,11 @@ go test -run TestName ./internal/loop/
   enforces this, and it keeps us consistent with `context.Canceled`.
 - Files the plugin owns are created `0o600`, directories `0o700`.
 - Tests: standard library only — `testing`, table-driven subtests, no assertion framework. No
-  `time.Sleep` for synchronisation. Temporary state goes in `t.TempDir()`.
+  `time.Sleep` for synchronisation. Temporary state goes in `t.TempDir()`, which is what lets the
+  suite be cached: `make test` has no cache-buster, so an unchanged package re-proves nothing.
+- A wait that exists for a real agent's terminal is a field, never a constant — `Run.OutputWait` and
+  `Run.ResetPace` — and tests set it to milliseconds. A fake agent redraws instantly, and sitting
+  through a real one's latency once per phase was the whole cost of the run tests.
 
 ## Dependencies
 
@@ -148,5 +166,8 @@ go test -run TestName ./internal/loop/
   ones today are `golang.org/x/sys` (flock, poll) and `golang.org/x/term` (raw mode).
 - Keep the Go version identical in `go.mod` and `.github/workflows/ci.yml`.
 - The plugin version lives in `herdr-plugin.toml` and nowhere else: `bin/ensure-binary.sh` rejects a
-  binary whose `version` output disagrees with it.
+  binary whose `version` output disagrees with it, `main.version` is stamped from it at build time,
+  and `make release` takes its tag from it and refuses a tag that already exists. The binary's own
+  default is `dev`, never a number: an unstamped build has to fail that check rather than pass for
+  the release it happens to sit next to.
 - Dependabot is notification-only; update in deliberate batches and run `make prep` afterwards.

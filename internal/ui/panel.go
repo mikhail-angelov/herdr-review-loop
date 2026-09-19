@@ -516,7 +516,7 @@ func inputKey(key string, pane panelUI) panelUI {
 			pane.input.value = string(runes[:len(runes)-1])
 		}
 	default:
-		if len(key) == 1 && key[0] >= 32 {
+		if printable(key) {
 			pane.input.value += key
 		}
 	}

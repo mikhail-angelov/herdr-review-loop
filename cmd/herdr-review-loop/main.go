@@ -21,7 +21,11 @@ import (
 	"github.com/mikhail-angelov/herdr-review-loop/internal/ui"
 )
 
-var version = "0.1.0"
+// version is stamped at build time from herdr-plugin.toml, which is the only place the plugin's
+// version is written. The default is deliberately not a version number: a binary that was built
+// without the stamp must fail the manifest check and be replaced, never pass for the release it
+// happens to sit next to.
+var version = "dev"
 
 // main maps a failure to the exit code the loop decided on. Every code but 2 is chosen where the
 // outcome is known; an error that names none is a tool error, which is also what a usage error is.
@@ -444,20 +448,26 @@ var panePlacement = map[string]string{
 // panel, which the loop opens on its own, is the one thing that must not take their place.
 func openPane(ctx context.Context, client herdr.Client, environment herdr.Environment, entrypoint string) error {
 	target := environment.Context.FocusedPaneID
-	args := []string{"plugin", "pane", "open", "--plugin", "herdr-review-loop", "--entrypoint", entrypoint}
+	opening := herdr.PaneOpening{Entrypoint: entrypoint, Focus: true}
 	switch panePlacement[entrypoint] {
 	case "split":
-		args = append(args, "--placement", "split", "--direction", "right", "--target-pane", target, "--no-focus", "--env", "HERDR_REVIEW_LOOP_AUTHOR="+target)
+		opening.Placement, opening.Direction, opening.Target, opening.Focus = "split", "right", target, false
+		opening.Env = []string{"HERDR_REVIEW_LOOP_AUTHOR=" + target}
 	case "tab":
-		args = append(args, "--placement", "tab", "--focus")
-		if environment.Context.WorkspaceID != "" {
-			args = append(args, "--workspace", environment.Context.WorkspaceID)
-		}
-	default:
-		args = append(args, "--focus")
+		opening.Placement, opening.Workspace = "tab", environment.Context.WorkspaceID
 	}
-	_, err := client.Call(ctx, args...)
-	return err
+	pane, err := client.PluginPaneOpen(ctx, opening)
+	if err != nil || !opening.Focus {
+		return err
+	}
+	// the open flag is answered while the pane is still being built, so the user is taken there
+	// once there is something to name — and what is named decides whether they actually move: a
+	// pane in a tab of its own is reached by focusing that tab, because the terminal changes the
+	// tab it is showing only for a tab that was focused, not for a pane that happens to sit in one
+	if pane.TabID != "" && panePlacement[entrypoint] == "tab" {
+		return client.TabFocus(ctx, pane.TabID)
+	}
+	return client.PluginPaneFocus(ctx, pane.ID)
 }
 
 // viewCommand is the body of the findings and diff panes: it renders what the newest run has
@@ -475,9 +485,9 @@ func viewCommand(app application, args []string) error {
 	case "findings":
 		text = latestFindings(app.environment, repository)
 	case "diff":
-		text, err = latestDiff(context.Background(), app.environment, repository)
+		text, err = latestDiff(context.Background(), app.environment, repository, colored())
 	case "log":
-		text = loop.LogDocument(app.environment.StateDir, repository)
+		text = loop.LogDocument(app.environment.StateDir, repository, paneStyle())
 	default:
 		return usageError()
 	}
@@ -510,17 +520,20 @@ func latestFindings(environment herdr.Environment, repository string) string {
 	if !ok {
 		return "the newest round could not be read.\n"
 	}
-	return loop.RenderMarkdown(document)
+	return loop.Render(document, paneStyle())
 }
 
 // latestDiff shows what the loop has changed most recently: the last completed round when there is
 // one, and otherwise the working tree against the checkpoint the round started from.
-func latestDiff(ctx context.Context, environment herdr.Environment, repository string) (string, error) {
+func latestDiff(ctx context.Context, environment herdr.Environment, repository string, color bool) (string, error) {
 	base, head, found := loop.LatestChange(ctx, environment.StateDir, repository)
 	if !found {
 		return "no checkpoint to compare against; the run recorded none.\n", nil
 	}
-	args := []string{"-C", repository, "diff", base}
+	// git turns its colors off the moment it is not writing to a terminal, and this diff is always
+	// written into a pager: without asking, the pane would show a diff no one could read at a
+	// glance
+	args := []string{"-C", repository, "diff", diffColor(color), base}
 	if head != "" {
 		args = append(args, head)
 	}
@@ -753,7 +766,7 @@ func history(environment herdr.Environment) error {
 		if repository == "" || base == "" || head == "" || base == head {
 			return nil
 		}
-		return exec.Command("git", "-C", repository, "diff", base, head) //nolint:gosec // repository and commits come from our own records
+		return exec.Command("git", "-C", repository, "diff", diffColor(colored()), base, head) //nolint:gosec // repository and commits come from our own records
 	}
 	return ui.History(os.Stdin, os.Stdout, runs, ui.HistoryActions{
 		Findings: func(run, round int) *exec.Cmd {
@@ -769,7 +782,7 @@ func history(environment herdr.Environment) error {
 			if !found {
 				return nil
 			}
-			return pager(loop.RenderMarkdown(document))
+			return pager(loop.Render(document, paneStyle()))
 		},
 		RoundDiff: func(run, round int) *exec.Cmd {
 			runView, ok := historyRun(views, run)
@@ -848,7 +861,67 @@ func roundLabel(round loop.RoundView) string {
 	}
 }
 
-// pager feeds rendered markdown to the user's own pager, so findings scroll and search the way
+// colored reports whether a pane may use color. NO_COLOR is honored because it is the one
+// convention every terminal tool already agrees on, and a pane is the only place this plugin emits
+// color at all — `show` stays plain, so a redirected round is the same bytes it always was.
+func colored() bool { return os.Getenv("NO_COLOR") == "" }
+
+// diffColor is what git must be told, given that answer. `always` rather than `auto`, because this
+// diff is written into a pager and git would see the pipe and give up its colors.
+func diffColor(color bool) string {
+	if color {
+		return "--color=always"
+	}
+	return "--color=never"
+}
+
+// paneStyle is how a round reads in a pane: the severity and the author's verdict carry the colors
+// the panel already uses for the same states, and the markdown markers give way to them. Severity
+// is the one thing a reader scans a findings pane for, so it is the one thing that is never dim.
+func paneStyle() loop.Style {
+	if !colored() {
+		return loop.MarkdownStyle()
+	}
+	return loop.Style{
+		Title: ui.Bold, Head: ui.Bold, Strong: ui.Bold, Faint: ui.Dim,
+		Severity: func(severity string) string {
+			switch severity {
+			case loop.SeverityHigh:
+				return ui.Red(severity)
+			case loop.SeverityMedium:
+				return ui.Yellow(severity)
+			default:
+				return ui.Cyan(severity)
+			}
+		},
+		Action: func(action string) string {
+			switch action {
+			case loop.ActionApplied:
+				return ui.Green(action)
+			case loop.ActionRejected:
+				return ui.Dim(action)
+			default:
+				return ui.Yellow(action)
+			}
+		},
+		// an event is colored by the same level the panel gives it, through the same table: a
+		// stall the panel prints in red must not be a plain line in the log pane beside it
+		Event: func(event, text string) string {
+			switch feedLevel(event) {
+			case ui.LevelBad:
+				return ui.Red(text)
+			case ui.LevelWarn:
+				return ui.Yellow(text)
+			case ui.LevelGood:
+				return ui.Green(text)
+			default:
+				return text
+			}
+		},
+	}
+}
+
+// pager feeds a rendered round to the user's own pager, so findings scroll and search the way
 // everything else on their terminal does. Nothing is written to disk to show it.
 func pager(text string) *exec.Cmd {
 	if text == "" {

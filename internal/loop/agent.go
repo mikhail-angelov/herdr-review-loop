@@ -166,10 +166,31 @@ func ValidateResetCommand(agent herdr.Agent, configured string) error {
 	return nil
 }
 
+// ResetPace is how long a reset waits on the agent's own terminal: Echo before reading back what
+// was typed, Settle after the command is sent. They are the agent's redraw rather than ours, so
+// they are a field and not a constant — a test drives a fake that redraws instantly, and paying a
+// real agent's latency for it is the whole cost of the run tests.
+type ResetPace struct {
+	Echo   time.Duration
+	Settle time.Duration
+}
+
+// orDefault fills in what a caller left at zero, so a Run that never names a pace still waits the
+// way a real agent needs.
+func (p ResetPace) orDefault() ResetPace {
+	if p.Echo <= 0 {
+		p.Echo = 400 * time.Millisecond
+	}
+	if p.Settle <= 0 {
+		p.Settle = 1500 * time.Millisecond
+	}
+	return p
+}
+
 // ResetSession clears an agent's context between rounds so each round is judged on the code, not
 // on what the agent remembers saying. The command is typed and read back before enter is sent,
 // because agents drop input while they are still redrawing.
-func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, configured string, log func(string)) error {
+func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, configured string, pace ResetPace, log func(string)) error {
 	command := resetCommand(agent, configured)
 	if command == "" {
 		if log != nil {
@@ -177,11 +198,12 @@ func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, co
 		}
 		return ValidateResetCommand(agent, configured)
 	}
+	pace = pace.orDefault()
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err := client.PaneSendText(ctx, agent.PaneID, command); err != nil {
 			return err
 		}
-		if !pause(ctx, 400*time.Millisecond) {
+		if !pause(ctx, pace.Echo) {
 			return interrupted(ctx)
 		}
 		visible, err := client.PaneRead(ctx, agent.PaneID)
@@ -192,13 +214,13 @@ func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, co
 			if err := client.PaneSendKeys(ctx, agent.PaneID, "enter"); err != nil {
 				return err
 			}
-			pause(ctx, 1500*time.Millisecond)
+			pause(ctx, pace.Settle)
 			return interrupted(ctx)
 		}
 		if err := client.PaneSendKeys(ctx, agent.PaneID, "esc"); err != nil {
 			return err
 		}
-		if !pause(ctx, 400*time.Millisecond) {
+		if !pause(ctx, pace.Echo) {
 			return interrupted(ctx)
 		}
 	}

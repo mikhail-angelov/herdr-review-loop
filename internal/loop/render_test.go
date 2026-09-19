@@ -80,3 +80,25 @@ func TestLoadRoundReportsAMissingRound(t *testing.T) {
 		t.Fatal("a round that was never archived was loaded")
 	}
 }
+
+func TestRenderDecoratesThroughTheStyleItIsGiven(t *testing.T) {
+	document := archivedDocument(t)
+	styled := Render(document, Style{
+		Head:     func(text string) string { return "<h>" + text + "</h>" },
+		Severity: func(severity string) string { return "<s>" + severity + "</s>" },
+		Action:   func(action string) string { return "<a>" + action + "</a>" },
+	})
+	for _, want := range []string{"<h>r01-1</h>", "<s>high</s>", "<a>applied</a>", "<h>tests</h>"} {
+		if !strings.Contains(styled, want) {
+			t.Errorf("the style was not applied: %q missing from\n%s", want, styled)
+		}
+	}
+	// a style that leaves a field unset renders that part plain rather than panicking, so a pane
+	// can decorate only what it has a color for
+	if strings.Contains(styled, "**") || strings.Contains(styled, "# run") {
+		t.Errorf("markdown markers survived a style that replaced them:\n%s", styled)
+	}
+	if !strings.Contains(styled, "context is not canceled on the timeout path") {
+		t.Errorf("the unstyled title was dropped:\n%s", styled)
+	}
+}

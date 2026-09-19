@@ -11,7 +11,15 @@ accepts_version() {
 
 build() {
   command -v go >/dev/null 2>&1 || return 1
-  go build -o "$binary" -ldflags "-X main.version=$version" ./cmd/herdr-review-loop
+  # built to a private name and renamed into place: every entry point provisions the binary, so two
+  # panes starting at once would otherwise be two writers of the file one of them is about to exec.
+  # The build runs from the plugin root because the caller's directory is whatever pane it started in
+  temporary="$binary.$$"
+  (cd "$root" && go build -o "$temporary" -ldflags "-X main.version=$version" ./cmd/herdr-review-loop) || {
+    rm -f "$temporary"
+    return 1
+  }
+  mv -f "$temporary" "$binary"
   accepts_version
 }
 
@@ -29,7 +37,10 @@ download() {
   if [[ ! -f "$temporary/$asset" || ! -f "$temporary/SHA256SUMS" ]] && command -v curl >/dev/null 2>&1; then
     rm -f "$temporary/$asset" "$temporary/SHA256SUMS"
     base="https://github.com/mikhail-angelov/herdr-review-loop/releases/download/v$version"
-    curl -fsSL "$base/$asset" -o "$temporary/$asset" && curl -fsSL "$base/SHA256SUMS" -o "$temporary/SHA256SUMS" || true
+    # quiet: a version with no release yet is the ordinary case on the build fallback below, and
+    # curl's own complaint about it would surface in whatever pane happened to start the plugin
+    curl -fsSL "$base/$asset" -o "$temporary/$asset" 2>/dev/null &&
+      curl -fsSL "$base/SHA256SUMS" -o "$temporary/SHA256SUMS" 2>/dev/null || true
   fi
   [[ -f "$temporary/$asset" && -f "$temporary/SHA256SUMS" ]] || return 1
   if command -v sha256sum >/dev/null 2>&1; then verifier=(sha256sum -c -)

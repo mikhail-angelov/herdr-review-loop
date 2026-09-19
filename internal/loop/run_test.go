@@ -89,7 +89,7 @@ func (*runClient) NotificationShow(context.Context, string, string, string) erro
 func (*runClient) PaneReportMetadata(context.Context, string, string, string, bool) error {
 	return nil
 }
-func (*runClient) PluginPaneOpen(context.Context, string, string) (string, error) {
+func (*runClient) PluginPanelOpen(context.Context, string, string) (string, error) {
 	return "", errors.New("panel unavailable")
 }
 func (*runClient) PaneLayout(context.Context, string) (herdr.PaneLayout, error) {
@@ -119,6 +119,7 @@ func newRun(t *testing.T, client Client, values config.Values) (run Run, reposit
 		},
 		Log:        Log{StateDir: state},
 		OutputWait: 50 * time.Millisecond,
+		ResetPace:  ResetPace{Echo: time.Millisecond, Settle: time.Millisecond},
 	}, repository, state
 }
 

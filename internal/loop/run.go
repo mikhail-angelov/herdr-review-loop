@@ -20,7 +20,7 @@ type Client interface {
 	WorkspaceReportMetadata(context.Context, string, string, bool) error
 	NotificationShow(context.Context, string, string, string) error
 	PaneReportMetadata(context.Context, string, string, string, bool) error
-	PluginPaneOpen(context.Context, string, string) (string, error)
+	PluginPanelOpen(context.Context, string, string) (string, error)
 	PaneLayout(context.Context, string) (herdr.PaneLayout, error)
 	PaneResize(context.Context, string, string, float64) error
 }
@@ -50,6 +50,10 @@ type Run struct {
 	// already stopped by then, so this only covers the write landing on disk. Zero means the
 	// default; it is a field because it is the one delay a test cannot afford to sit through.
 	OutputWait time.Duration
+	// ResetPace is how long clearing an agent's session waits on its terminal. Zero means the
+	// default; like OutputWait it is a field because a fake agent redraws instantly and a test has
+	// no reason to sit through a real one's latency once per phase.
+	ResetPace ResetPace
 	// OneShot runs one review and waits for a panel choice before a single author turn.
 	OneShot bool
 }
@@ -200,7 +204,7 @@ func (r Run) rounds(ctx context.Context, state *session, author, reviewer herdr.
 			// a clean round can still have produced findings the bar withheld, and nothing a run
 			// produced is lost while the run is kept
 			r.record(state, round, Review{Filtered: review.Filtered, PreExisting: review.PreExisting}, Decisions{}, "", "")
-			return r.finishClean(ctx, state, author, round, len(review.Filtered))
+			return r.finishClean(state, round, len(review.Filtered))
 		case Blocked:
 			r.record(state, round, review, Decisions{}, ActionUnreviewed, "the reviewer asked a question")
 			state.report.OpenQuestions = review.OpenQuestions
@@ -323,7 +327,7 @@ func (r Run) oneShot(ctx context.Context, state *session, author, reviewer herdr
 			return r.fail(state, actionErr)
 		}
 		r.record(state, round, review, Decisions{}, "", "")
-		return r.finishClean(ctx, state, author, round, len(review.Filtered))
+		return r.finishClean(state, round, len(review.Filtered))
 	}
 	decisions, err := r.fixPhaseWithInstruction(ctx, state, author, runDir.Round(round), policy, review, checkpoints, oneShotInstruction(choice))
 	if err != nil {
@@ -713,7 +717,7 @@ func (r Run) prepareAgent(ctx context.Context, agent herdr.Agent) error {
 	if _, err := Settle(ctx, r.Client, agent); err != nil {
 		return err
 	}
-	if err := ResetSession(ctx, r.Client, agent, r.Config.ResetCommand, r.note); err != nil {
+	if err := ResetSession(ctx, r.Client, agent, r.Config.ResetCommand, r.ResetPace, r.note); err != nil {
 		return err
 	}
 	_, err := Settle(ctx, r.Client, agent)
@@ -803,9 +807,10 @@ func reportEntry(finding Finding, round int, action, note string) ReportFinding 
 	}
 }
 
-// finishClean is the only path that ends a run with code 0.
-func (r Run) finishClean(ctx context.Context, state *session, author herdr.Agent, round, filtered int) error {
-	_ = r.Client.AgentFocus(ctx, herdr.Target(author))
+// finishClean is the only path that ends a run with code 0. It takes no focus: a run that ended
+// with nothing to decide has nothing to show the user that the notification does not already say,
+// and focus is the pane's to keep unless an agent is blocked.
+func (r Run) finishClean(state *session, round, filtered int) error {
 	outcome := fmt.Sprintf("clean after %d round(s)", round)
 	if filtered > 0 {
 		outcome = fmt.Sprintf("%s, %d filtered", outcome, filtered)
@@ -972,7 +977,7 @@ func (r Run) ensurePanel(ctx context.Context, author herdr.Agent) {
 		_ = r.Log.Write("using existing panel")
 		return
 	}
-	pane, err := r.Client.PluginPaneOpen(ctx, author.PaneID, author.PaneID)
+	pane, err := r.Client.PluginPanelOpen(ctx, author.PaneID, author.PaneID)
 	if err != nil {
 		_ = r.Log.Write("panel open failed: " + err.Error())
 		return

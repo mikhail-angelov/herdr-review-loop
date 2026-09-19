@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/sys/unix"
@@ -282,4 +283,12 @@ func (r *KeyReader) enqueueLiteral(bytes []byte) {
 	for _, value := range bytes {
 		r.pending = append(r.pending, string(value))
 	}
+}
+
+// printable reports whether a key is a character to append to a text field. A key is measured in
+// runes, not bytes: ReadKey delivers a whole UTF-8 character, so a byte-length test would drop
+// every non-ASCII one. Named keys ("up", "paste") are more than one rune and never match.
+func printable(key string) bool {
+	character, size := utf8.DecodeRuneInString(key)
+	return size == len(key) && character != utf8.RuneError && unicode.IsPrint(character)
 }

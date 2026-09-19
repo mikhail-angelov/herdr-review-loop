@@ -88,7 +88,7 @@ func TestResetSessionRetriesDroppedCommand(t *testing.T) {
 		wait:    func() (herdr.Agent, error) { return herdr.Agent{}, nil },
 		prompt:  func() (herdr.Agent, error) { return herdr.Agent{}, errors.New("unused") },
 	}
-	if err := ResetSession(context.Background(), fake, herdr.Agent{PaneID: "p", Kind: "codex"}, "", nil); err != nil {
+	if err := ResetSession(context.Background(), fake, herdr.Agent{PaneID: "p", Kind: "codex"}, "", quickReset(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.sentText) != 2 || len(fake.sentKeys) != 2 || fake.sentKeys[0] != "esc" || fake.sentKeys[1] != "enter" {
@@ -103,7 +103,11 @@ func TestResetSessionFailsWhenCommandIsDropped(t *testing.T) {
 		wait:    func() (herdr.Agent, error) { return herdr.Agent{}, nil },
 		prompt:  func() (herdr.Agent, error) { return herdr.Agent{}, errors.New("unused") },
 	}
-	if err := ResetSession(context.Background(), fake, herdr.Agent{PaneID: "p", Kind: "codex"}, "", nil); err == nil {
+	if err := ResetSession(context.Background(), fake, herdr.Agent{PaneID: "p", Kind: "codex"}, "", quickReset(), nil); err == nil {
 		t.Fatal("accepted a session that was not reset")
 	}
 }
+
+// quickReset is the pace a fake agent needs: it echoes the moment it is written to, so the waits
+// that exist for a real terminal's redraw are the test's whole runtime if left at their defaults.
+func quickReset() ResetPace { return ResetPace{Echo: time.Millisecond, Settle: time.Millisecond} }

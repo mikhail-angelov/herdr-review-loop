@@ -26,9 +26,31 @@ func TestSettledPointsAreCarriedToTheNextRunAndDroppedAtFinish(t *testing.T) {
 	if block := settledBlock(next.Entries()); !strings.Contains(block, "the logging is deliberate") {
 		t.Fatalf("the reviewer is not told what was settled: %q", block)
 	}
-	ClearSettled(state)
+	ClearSettled(state, "/repo")
 	if got := LoadSettled(state, "/repo"); got != nil {
 		t.Fatalf("finishing left %#v behind", got)
+	}
+}
+
+func TestOneRepositorySettlingDoesNotEvictAnother(t *testing.T) {
+	state := t.TempDir()
+	here := []Settled{{Fingerprint: "fp1", Round: 1, Action: ActionRejected, Note: "deliberate here"}}
+	there := []Settled{{Fingerprint: "fp2", Round: 1, Action: ActionDeferred, Note: "deferred there"}}
+	if err := SaveSettled(state, "/here", here); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveSettled(state, "/there", there); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadSettled(state, "/here"); len(got) != 1 || got[0].Note != "deliberate here" {
+		t.Fatalf("the second repository overwrote the first: %#v", got)
+	}
+	ClearSettled(state, "/here")
+	if got := LoadSettled(state, "/here"); got != nil {
+		t.Fatalf("finishing left %#v behind", got)
+	}
+	if got := LoadSettled(state, "/there"); len(got) != 1 || got[0].Note != "deferred there" {
+		t.Fatalf("finishing one repository cleared another: %#v", got)
 	}
 }
 

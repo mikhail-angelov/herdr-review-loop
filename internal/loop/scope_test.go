@@ -77,6 +77,17 @@ func TestBranchScopeRefusesABaseItCannotTellFromTheBranchItself(t *testing.T) {
 	if _, resolveErr := named.Resolve(t.Context(), nil, repository); resolveErr == nil {
 		t.Fatal("a base that does not exist was accepted")
 	}
+	// a base the user named is held to the same rule as one the loop guessed: a merge base that
+	// is HEAD means the branch diff is empty, and the run would review only the working tree
+	for _, spec := range []string{"branch:HEAD", "branch:main"} {
+		self, parseErr := ParseScope(spec)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if _, resolveErr := self.Resolve(t.Context(), nil, repository); resolveErr == nil {
+			t.Fatalf("%s resolved to a branch review with no branch diff", spec)
+		}
+	}
 }
 
 func TestPanelScopeNamesWhatWouldBeReviewedAndHowMuchOfIt(t *testing.T) {

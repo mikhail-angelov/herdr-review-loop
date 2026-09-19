@@ -196,3 +196,19 @@ func TestPanelOffersNoReviewWhileAnotherSpaceHoldsTheLoop(t *testing.T) {
 		t.Fatal("r started a review the lock would have refused")
 	}
 }
+
+// A text field takes the character the key produced, whatever alphabet it came from; a named key
+// is not a character and must not land in the field.
+func TestInputKeyAcceptsNonASCIICharactersAndIgnoresNamedKeys(t *testing.T) {
+	pane := panelUI{input: &panelInput{label: "instruction"}}
+	for _, key := range []string{"й", "ы", "x", " ", "up", "paste", "\x01"} {
+		pane = inputKey(key, pane)
+	}
+	if pane.input == nil || pane.input.value != "йыx " {
+		t.Fatalf("value = %#v", pane.input)
+	}
+	pane = inputKey("\x7f", pane)
+	if pane.input.value != "йыx" {
+		t.Fatalf("backspace = %q", pane.input.value)
+	}
+}

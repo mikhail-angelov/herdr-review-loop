@@ -117,24 +117,26 @@ func FormatEvent(event Event) string {
 // LogDocument is the panel's feed at full width: the newest run for a repository, every event it
 // recorded with nothing clipped, and the journal underneath it. The panel has one line per event
 // and a pane thirty columns wide, so anything with a detail worth reading is cut off there; this is
-// the same material for a pager, where it can be scrolled and searched.
-func LogDocument(stateDir, repository string) string {
+// the same material for a pager, where it can be scrolled and searched. It takes the same Style the
+// findings document does, because the two are read in the same kind of pane and an event that is
+// red in the panel has no business being plain here.
+func LogDocument(stateDir, repository string, style Style) string {
 	record, found := LatestRun(stateDir, repository)
 	if !found {
 		return "no recorded runs for this repository yet.\n"
 	}
 	var page strings.Builder
-	fmt.Fprintf(&page, "run %s · %s\n", record.Started.Local().Format("2006-01-02 15:04"), record.Repository)
+	fmt.Fprintf(&page, "%s\n", style.Title(fmt.Sprintf("run %s · %s", record.Started.Local().Format("2006-01-02 15:04"), record.Repository)))
 	if record.Author != "" {
-		fmt.Fprintf(&page, "%s ← %s\n", record.Author, record.Reviewer)
+		fmt.Fprintf(&page, "%s\n", style.Faint(fmt.Sprintf("%s ← %s", record.Author, record.Reviewer)))
 	}
-	fmt.Fprintf(&page, "%d round(s) · %s\n\nevents\n", record.Rounds, record.Outcome)
+	fmt.Fprintf(&page, "%d round(s) · %s\n\n%s\n", record.Rounds, style.Strong(record.Outcome), style.Head("events"))
 	events := ReadEvents(ArchiveDir(stateDir, record.ID))
 	if len(events) == 0 {
 		page.WriteString("  none recorded yet\n")
 	}
 	for _, event := range events {
-		page.WriteString("  " + FormatEvent(event) + "\n")
+		page.WriteString("  " + style.Event(event.Event, FormatEvent(event)) + "\n")
 	}
 	// the journal is one file for the whole state directory, so it is labeled rather than filtered:
 	// the lines that are not this run's are still the ones that explain a run that never started
@@ -142,9 +144,9 @@ func LogDocument(stateDir, repository string) string {
 	if err != nil || strings.TrimSpace(tail) == "" {
 		return page.String()
 	}
-	page.WriteString("\njournal — every workspace, newest last\n")
+	fmt.Fprintf(&page, "\n%s\n", style.Head("journal — every workspace, newest last"))
 	for _, line := range strings.Split(strings.TrimRight(tail, "\n"), "\n") {
-		page.WriteString("  " + line + "\n")
+		page.WriteString("  " + style.Faint(line) + "\n")
 	}
 	return page.String()
 }

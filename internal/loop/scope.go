@@ -136,9 +136,10 @@ func (s Scope) Resolve(ctx context.Context, dir *RunDir, repository string) (Sco
 // it is the only one of these the repository actually states rather than the loop guessing.
 var baseCandidates = []string{"origin/main", "origin/master", "main", "master"}
 
-// resolveBase finds the commit this branch left its base at. A candidate that is HEAD itself is
-// skipped rather than used: it would mean the base is this branch, and the run would silently
-// review the uncommitted changes under a name that promised the whole branch.
+// resolveBase finds the commit this branch left its base at. A base that is HEAD itself is never
+// used: it would mean the base is this branch, and the run would silently review the uncommitted
+// changes under a name that promised the whole branch. An auto-detected candidate is skipped and
+// the next one tried; a base the user named is an error, because there is no next one to try.
 func resolveBase(ctx context.Context, repository, ref string) (base, named string, err error) {
 	head, err := git(ctx, repository, nil, "rev-parse", "HEAD")
 	if err != nil {
@@ -146,7 +147,13 @@ func resolveBase(ctx context.Context, repository, ref string) (base, named strin
 	}
 	if ref != "" {
 		base, err = mergeBase(ctx, repository, ref, head)
-		return base, ref, err
+		if err != nil {
+			return "", "", err
+		}
+		if base == head {
+			return "", "", fmt.Errorf("scope base %q is where this branch already is, so the branch diff is empty: name the branch this one came from, or use scope %s", ref, config.ScopeWorktree)
+		}
+		return base, ref, nil
 	}
 	for _, candidate := range append(remoteDefaultBranch(ctx, repository), baseCandidates...) {
 		base, err = mergeBase(ctx, repository, candidate, head)

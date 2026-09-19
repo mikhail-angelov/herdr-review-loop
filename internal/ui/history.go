@@ -43,7 +43,7 @@ func HistoryView(runs []HistoryRun, run, round int, inRun bool, message string, 
 	}
 	lines := []string{"", Bold(Clip("  herdr-review-loop · history", width))}
 	if len(runs) == 0 {
-		lines = append(lines, "", Clip("  no recorded runs yet", width), "", Dim(Clip("  q close", width)))
+		lines = append(lines, "", Clip("  no recorded runs yet", width), "", "  "+Keys("q close"))
 		return frame(lines, rows)
 	}
 	reserved := 2 // blank line and key hints
@@ -88,7 +88,7 @@ func HistoryView(runs []HistoryRun, run, round int, inRun bool, message string, 
 	if inRun {
 		hint = "enter findings · d round diff · a run diff · c restore · esc back · q close"
 	}
-	lines = append(lines, "", Dim(Clip("  "+hint, width)))
+	lines = append(lines, "", "  "+Keys(Clip(hint, width-2)))
 	if message != "" {
 		lines = append(lines, "", Clip("  "+message, width))
 	}

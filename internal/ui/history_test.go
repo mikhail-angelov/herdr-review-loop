@@ -27,7 +27,7 @@ func TestHistoryViewListsRunsAndOpensRounds(t *testing.T) {
 	if !strings.Contains(opened, "round 1") || !strings.Contains(opened, "round 2") {
 		t.Fatalf("rounds are missing: %q", opened)
 	}
-	if !strings.Contains(opened, "d round diff") {
+	if !strings.Contains(plain(opened), "d round diff") {
 		t.Fatalf("open-run keys are missing: %q", opened)
 	}
 }

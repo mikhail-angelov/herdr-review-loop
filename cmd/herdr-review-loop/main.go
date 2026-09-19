@@ -385,13 +385,27 @@ func togglePause(environment herdr.Environment) string {
 	return "pausing at the next round boundary"
 }
 
-// describeWithStatus names an agent and what Herdr currently sees it doing, which is the one thing
-// about the pair the loop's own event stream cannot say.
-func describeWithStatus(agent herdr.Agent) string {
-	if agent.Status == "" {
-		return herdr.Describe(agent)
+// feedLines carries the run's events to the panel with a level attached. The loop names what
+// happened and the panel decides how loud that is; this is the one place the two vocabularies meet.
+func feedLines(feed loop.Feed) []ui.FeedLine {
+	lines := make([]ui.FeedLine, 0, len(feed.Lines))
+	for _, line := range feed.Lines {
+		lines = append(lines, ui.FeedLine{Text: line.Text, Level: feedLevel(line.Event)})
 	}
-	return herdr.Describe(agent) + " · " + agent.Status
+	return lines
+}
+
+func feedLevel(event string) string {
+	switch event {
+	case loop.EventStall, loop.EventTimeout, loop.EventBlocked, loop.EventDegraded, loop.EventCanceled:
+		return ui.LevelBad
+	case loop.EventRetry, loop.EventParseFallback, loop.EventFiltered, loop.EventPaused:
+		return ui.LevelWarn
+	case loop.EventPhaseDone, loop.EventResumed:
+		return ui.LevelGood
+	default:
+		return ui.LevelNormal
+	}
 }
 
 // panelPending turns the loop's boundary into what the panel shows and which keys it offers.
@@ -554,8 +568,9 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 	}()
 	var pair struct {
 		sync.RWMutex
-		author, reviewer, message string
-		scope, changes, spec      string
+		author, reviewer, message    string
+		authorStatus, reviewerStatus string
+		scope, changes, spec         string
 	}
 	pair.author = environment.Context.FocusedPaneID
 	refreshPair := func() {
@@ -568,13 +583,14 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 			scopeText, changesText = loop.PanelScope(ctx, repository, values.Scope)
 		}
 		authorText, reviewerText, message := environment.Context.FocusedPaneID, "", ""
+		authorStatus, reviewerStatus := "", ""
 		agents, err := client.AgentList(ctx)
 		if err != nil {
 			message = "no pair: " + err.Error()
 		} else if author, ok := herdr.Find(agents, environment.Context.FocusedPaneID); ok {
-			authorText = describeWithStatus(author)
+			authorText, authorStatus = herdr.Describe(author), author.Status
 			if reviewer, pickErr := herdr.PickReviewer(values, agents, author, nil); pickErr == nil {
-				reviewerText = describeWithStatus(reviewer)
+				reviewerText, reviewerStatus = herdr.Describe(reviewer), reviewer.Status
 			} else {
 				message = "no pair: " + pickErr.Error()
 			}
@@ -583,6 +599,7 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 		}
 		pair.Lock()
 		pair.author, pair.reviewer, pair.message = authorText, reviewerText, message
+		pair.authorStatus, pair.reviewerStatus = authorStatus, reviewerStatus
 		pair.scope, pair.changes, pair.spec = scopeText, changesText, spec
 		pair.Unlock()
 	}
@@ -607,7 +624,7 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 		held := live && owner == environment.Context.WorkspaceID
 		repository, repositoryErr := environment.Repository()
 		feed := loop.LatestFeed(environment.StateDir, repository, 200)
-		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: feed.Phase, Events: feed.Lines, Running: held}
+		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: feed.Phase, Events: feedLines(feed), Running: held}
 		if !held {
 			state.Phase = feed.Outcome
 		}
@@ -627,6 +644,7 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 		}
 		pair.RLock()
 		state.Author, state.Reviewer, state.Message = pair.author, pair.reviewer, pair.message
+		state.AuthorStatus, state.ReviewerStatus = pair.authorStatus, pair.reviewerStatus
 		state.Scope, state.Changes = pair.scope, pair.changes
 		pair.RUnlock()
 		return state

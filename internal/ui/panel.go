@@ -13,8 +13,11 @@ import (
 // the run's event stream it scrolls.
 type PanelState struct {
 	Author, Reviewer, Phase, Message string
-	Events                           []string
-	Running                          bool
+	// AuthorStatus and ReviewerStatus are Herdr's own words for what each agent is doing — idle,
+	// working, blocked — kept apart from the names so the panel can color them.
+	AuthorStatus, ReviewerStatus string
+	Events                       []FeedLine
+	Running                      bool
 	// Scope is what a run started here would review, and Changes how much that covers. They are
 	// shown before a run rather than after it, because the scope is the one setting whose wrong
 	// value cannot be told from a clean review.
@@ -45,6 +48,22 @@ type ScopeOption struct {
 	Current bool
 }
 
+// FeedLine is one event as the panel shows it: the text, and how much it should stand out. The
+// level is the panel's own vocabulary, so the loop keeps naming events and the panel keeps
+// deciding what red means.
+type FeedLine struct {
+	Text  string
+	Level string
+}
+
+// The levels a feed line can carry. The empty one is the ordinary course of a run.
+const (
+	LevelNormal = ""
+	LevelGood   = "good"
+	LevelWarn   = "warn"
+	LevelBad    = "bad"
+)
+
 // The pending kinds the panel offers choices for. They are the loop's own names for its
 // boundaries; the panel only decides which keys each one is answered with.
 const (
@@ -57,21 +76,12 @@ func PanelView(state PanelState, width, rows int) string {
 	if width < 1 || rows < 1 {
 		return ""
 	}
-	status := "idle"
-	if state.Running {
-		status = "● running"
-	}
-	if state.Pending != "" {
-		status = "⏸ waiting for you"
-	} else if state.Paused && state.Running {
-		status = "⏸ pausing"
-	}
-	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width)}
+	header := []string{titleLine(state, width), agentLine("author   ", state.Author, state.AuthorStatus, width), agentLine("review by ", state.Reviewer, state.ReviewerStatus, width)}
 	if state.Scope != "" {
-		header = append(header, Clip("scope    "+state.Scope, width))
+		header = append(header, labeled("scope    ", state.Scope, width))
 	}
 	if state.Changes != "" {
-		header = append(header, Clip("changes  "+state.Changes, width))
+		header = append(header, labeled("changes  ", state.Changes, width))
 	}
 	header = append(header, Clip(state.Phase, width))
 	if state.Summary != "" {
@@ -83,12 +93,13 @@ func PanelView(state PanelState, width, rows int) string {
 	footer := append([]string{""}, panelHints(state, width, rows-len(header)-1)...)
 	tail := make([]string, 0, len(state.Events))
 	for _, line := range state.Events {
-		if width < 44 && strings.HasPrefix(line, "[") {
-			if end := strings.Index(line, "] "); end >= 0 {
-				line = line[end+2:]
+		text := line.Text
+		if width < 44 && strings.HasPrefix(text, "[") {
+			if end := strings.Index(text, "] "); end >= 0 {
+				text = text[end+2:]
 			}
 		}
-		tail = append(tail, Clip(line, width))
+		tail = append(tail, levelStyle(line.Level)(Clip(text, width)))
 	}
 	if len(state.Picker) > 0 {
 		tail = pickerLines(state, width)
@@ -114,6 +125,78 @@ func PanelView(state PanelState, width, rows int) string {
 		lines = lines[:rows]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// titleLine is the panel's own state, colored: green while a run is going, yellow while it is
+// waiting for a person, dim when there is nothing to watch.
+func titleLine(state PanelState, width int) string {
+	status, style := "idle", Dim
+	switch {
+	case state.Pending != "":
+		status, style = "⏸ waiting for you", Yellow
+	case state.Running && state.Paused:
+		status, style = "⏸ pausing", Yellow
+	case state.Running:
+		status, style = "● running", Green
+	}
+	const name = "herdr-review-loop  "
+	line := Bold(Clip(name, width))
+	if room := width - len([]rune(name)); room > 0 {
+		line += style(Clip(status, room))
+	}
+	return line
+}
+
+// agentLine names an agent and colors what Herdr sees it doing. The status is dropped rather than
+// clipped when the pane is too narrow for both: which agent it is matters more than its state, and
+// a half-written "block" would read as neither.
+func agentLine(label, name, status string, width int) string {
+	if status == "" {
+		return Clip(label+name, width)
+	}
+	suffix := " · " + status
+	room := width - len([]rune(suffix))
+	if room < 12 {
+		return Clip(label+name, width)
+	}
+	return Clip(label+name, room) + " · " + statusStyle(status)(status)
+}
+
+// labeled dims the label and leaves the value alone, so a column of labels reads as a column.
+func labeled(label, value string, width int) string {
+	if room := width - len([]rune(label)); room > 0 {
+		return Dim(label) + Clip(value, room)
+	}
+	return Dim(Clip(label, width))
+}
+
+// statusStyle is how an agent's state reads at a glance: green when it is ready for input, cyan
+// while it is working, red when it is waiting on a person, dim when Herdr cannot tell.
+func statusStyle(status string) func(string) string {
+	switch status {
+	case "idle", "done":
+		return Green
+	case "working":
+		return Cyan
+	case "blocked":
+		return Red
+	default:
+		return Dim
+	}
+}
+
+// levelStyle colors one event by how much it wants attention.
+func levelStyle(level string) func(string) string {
+	switch level {
+	case LevelBad:
+		return Red
+	case LevelWarn:
+		return Yellow
+	case LevelGood:
+		return Green
+	default:
+		return func(text string) string { return text }
+	}
 }
 
 // pickerLines renders the open list where the event feed was. The rows are ordered by the caller,
@@ -153,29 +236,45 @@ func panelHints(state PanelState, width, rows int) []string {
 	case state.Running:
 		hints = []string{"p pause", "x stop", "v findings", "d diff", "l log", "s settings", "q close"}
 	}
-	lines := wrapHints(hints, width)
+	rowsOfHints := wrapHints(hints, width)
 	// a short pane keeps the first key and the one that closes the pane, and gives up the ones in
 	// between: they are all reachable from Herdr's own action menu, and those two are not
-	for len(lines) > rows && len(hints) > 2 {
+	for len(rowsOfHints) > rows && len(hints) > 2 {
 		hints = append(hints[:len(hints)-2], hints[len(hints)-1])
-		lines = wrapHints(hints, width)
+		rowsOfHints = wrapHints(hints, width)
 	}
-	return lines
+	return renderHints(rowsOfHints)
 }
 
-func wrapHints(hints []string, width int) []string {
-	lines := []string{""}
+// wrapHints lays the hints out in plain text, because a line's width is counted in runes and a
+// style is not one. What each row holds is returned rather than the row itself, so the caller can
+// style the pieces after the arithmetic is done.
+func wrapHints(hints []string, width int) [][]string {
+	rows := [][]string{{}}
+	length := 0
 	for _, hint := range hints {
-		last := len(lines) - 1
-		joined := hint
-		if lines[last] != "" {
-			joined = lines[last] + " · " + hint
+		last := len(rows) - 1
+		width0 := len([]rune(hint))
+		if len(rows[last]) > 0 {
+			width0 += 3
 		}
-		if len([]rune(joined)) <= width {
-			lines[last] = joined
-		} else {
-			lines = append(lines, hint)
+		if length+width0 <= width || len(rows[last]) == 0 {
+			rows[last] = append(rows[last], hint)
+			length += width0
+			continue
 		}
+		rows = append(rows, []string{hint})
+		length = len([]rune(hint))
+	}
+	return rows
+}
+
+// renderHints styles each hint as its key and what the key does, so the keys read as keys rather
+// than as the first word of a sentence.
+func renderHints(rows [][]string) []string {
+	lines := make([]string, 0, len(rows))
+	for _, row := range rows {
+		lines = append(lines, Keys(strings.Join(row, " · ")))
 	}
 	return lines
 }

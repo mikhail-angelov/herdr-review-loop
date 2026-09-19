@@ -63,7 +63,14 @@ func (l Log) Tail() (string, error) {
 type Feed struct {
 	Phase   string
 	Outcome string
-	Lines   []string
+	Lines   []FeedLine
+}
+
+// FeedLine is one event as the panel prints it, with the event name kept beside the text. The
+// panel decides how much a stall should stand out; the loop only says that it was one.
+type FeedLine struct {
+	Text  string
+	Event string
 }
 
 // LatestFeed builds the panel's view of the newest run recorded for one repository. The state
@@ -92,7 +99,7 @@ func LatestFeed(stateDir, repository string, limit int) Feed {
 		events = events[len(events)-limit:]
 	}
 	for _, event := range events {
-		feed.Lines = append(feed.Lines, FormatEvent(event))
+		feed.Lines = append(feed.Lines, FeedLine{Text: FormatEvent(event), Event: event.Event})
 	}
 	return feed
 }

@@ -115,6 +115,10 @@ go test -run TestName ./internal/loop/
   Herdr event when there is one and on its own tick when there is not; it holds no loop state, so
   closing it cancels nothing. It shows only its own repository's runs and only a loop its own
   workspace owns: the state directory is shared by every space the plugin runs in.
+  `style.go` holds the only styling: color says what a state means — green settled, cyan working,
+  yellow waiting for a person, red blocked or failed — and `Keys` styles every pane's footer, so a
+  key looks the same wherever it is offered. Styling is applied *after* clipping, always: an escape
+  sequence is not a column and `Clip` counts runes.
   `tui.go`'s `shortcut` is what every pane matches keys against — the Latin letter engraved on the
   physical key that was pressed, lower case. A terminal delivers characters, never scancodes, so a
   layout is a translation table; adding one is a pair of strings, never a branch per key.

@@ -48,7 +48,7 @@ func TestLatestFeedReadsThePhaseAndEventsOfTheNewestRun(t *testing.T) {
 	if feed.Outcome != "" {
 		t.Fatalf("a running run reported an outcome: %q", feed.Outcome)
 	}
-	if len(feed.Lines) != 4 || !strings.Contains(feed.Lines[3], "no output 5m12s") {
+	if len(feed.Lines) != 4 || !strings.Contains(feed.Lines[3].Text, "no output 5m12s") || feed.Lines[3].Event != EventStall {
 		t.Fatalf("lines %#v", feed.Lines)
 	}
 }

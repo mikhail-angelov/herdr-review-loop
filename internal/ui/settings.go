@@ -278,7 +278,7 @@ func (p *settingsPane) view(status string, width, rows int) string {
 		message = ""
 	}
 	hint := p.fields[p.selected].Hint
-	lines = append(lines, p.scrollNote(top, height), "  "+Dim(Clip(hint, width-4)), "", "  "+Dim(Clip(message, width-4)), "", "  "+Dim(Clip(keys, width-4)))
+	lines = append(lines, p.scrollNote(top, height), "  "+Dim(Clip(hint, width-4)), "", "  "+Dim(Clip(message, width-4)), "", "  "+Keys(Clip(keys, width-4)))
 	if len(lines) > rows {
 		lines = lines[:rows]
 	}

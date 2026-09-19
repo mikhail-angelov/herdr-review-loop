@@ -370,6 +370,10 @@ somewhere else — `previous_tab = "prefix+alt+p"` under `[keys]` moves the buil
 Choosing one writes the `scope` setting, so a scope decided automatically can be overridden for
 good — and picking `auto` again hands the decision back.
 
+Color carries the state: green for an agent ready for input and a run in progress, cyan for an
+agent working, red for one blocked and for a stall or a failure in the feed, yellow for anything
+waiting on you. Keys are emphasized and what they do is dimmed, in every pane.
+
 The panel uses `r` to start a review and `o` for a one-shot review. While a loop runs it offers
 `p` to pause at the next round boundary and `x` to cancel outright. At a boundary — one you asked
 for, or one the `gate` setting produces — it offers `c` to continue, `n` to run exactly one more

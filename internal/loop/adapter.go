@@ -62,7 +62,7 @@ type NativeReview struct {
 // review command of its own — those fall back to the built-in prompt, which is the only place a
 // review taxonomy of ours remains.
 func Adapt(kind string, overrides map[string]string, policy RoundPolicy, scope Scope, reviewPath string, settled []Settled) (NativeReview, bool) {
-	command, delegated := resolveCommand(kind, overrides, policy)
+	command, delegated := resolveCommand(kind, overrides, policy, scope)
 	if !delegated {
 		return NativeReview{}, false
 	}
@@ -87,9 +87,19 @@ func adapterFor(kind string, overrides map[string]string) (Adapter, bool) {
 
 // resolveCommand gives the round's command precedence over the kind's default or override. Naming
 // a command for a round is enough to delegate it, even when the kind has no table entry.
-func resolveCommand(kind string, overrides map[string]string, policy RoundPolicy) (string, bool) {
+//
+// A native command scopes itself, and every command this table knows scopes itself to the
+// uncommitted changes. That is the worktree scope exactly and a strict subset of the branch scope,
+// so delegating a branch review would quietly review less than the run promised — the commits
+// already on the branch would never be looked at. Those rounds take the built-in prompt instead,
+// which names the diff to read. A command the round itself names is the user's own words about
+// their own CLI, and is taken at them.
+func resolveCommand(kind string, overrides map[string]string, policy RoundPolicy, scope Scope) (string, bool) {
 	if policy.Command != "" {
 		return slashed(policy.Command), true
+	}
+	if scope.Branch() {
+		return "", false
 	}
 	adapter, known := adapterFor(kind, overrides)
 	if !known || adapter.Command == "" {
@@ -124,8 +134,8 @@ func oneLine(text string) string {
 
 // DescribeCommand names the command a kind would run for a round, for the manifest, the dry run
 // and `config`. It is the same resolution the run uses, so what those three print is what happens.
-func DescribeCommand(kind string, overrides map[string]string, policy RoundPolicy) string {
-	command, delegated := resolveCommand(kind, overrides, policy)
+func DescribeCommand(kind string, overrides map[string]string, policy RoundPolicy, scope Scope) string {
+	command, delegated := resolveCommand(kind, overrides, policy, scope)
 	if !delegated {
 		return "built-in review prompt"
 	}

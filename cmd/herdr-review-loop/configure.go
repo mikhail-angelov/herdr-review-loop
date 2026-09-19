@@ -42,10 +42,16 @@ func configCommand(app application, args []string) error {
 		lines = append(lines, fmt.Sprintf("  %-*s  %-22s %s", width, field.Key, value, resolution.Layers[field.Key]))
 	}
 	reviewerKind := pairedReviewerKind(app)
+	// the scope decides whether a kind's own review command can be used at all, so `config` has to
+	// resolve it exactly as a run would, or it prints a command the run would not send
+	scope, scopeErr := loop.ParseScope(resolution.Values.Scope)
+	if scopeErr != nil {
+		lines = append(lines, "", "warning: "+scopeErr.Error())
+	}
 	lines = append(lines, "", "rounds  ("+resolution.Layers["rounds"]+")")
 	for round := 1; round <= min(resolution.Values.MaxIterations, max(len(resolution.Values.Rounds), 1)); round++ {
 		policy := loop.Policy(resolution.Values.Rounds, round)
-		command := loop.DescribeCommand(reviewerKind, resolution.Values.ReviewCommand, policy)
+		command := loop.DescribeCommand(reviewerKind, resolution.Values.ReviewCommand, policy, scope)
 		lines = append(lines, fmt.Sprintf("  %d  %s — %s", round, command, policy.Describe()))
 	}
 	lines = append(lines, "", "review commands")
@@ -82,10 +88,11 @@ func describeProfile(profile config.Profile) string {
 // individually — that they fall back is stated once.
 func describeReviewCommands(values config.Values) []string {
 	policy := loop.Policy(values.Rounds, 1)
+	scope, _ := loop.ParseScope(values.Scope)
 	kinds := loop.Kinds(values.ReviewCommand)
 	lines := make([]string, 0, len(kinds)+1)
 	for _, kind := range kinds {
-		lines = append(lines, fmt.Sprintf("  %-10s %s", kind, loop.DescribeCommand(kind, values.ReviewCommand, policy)))
+		lines = append(lines, fmt.Sprintf("  %-10s %s", kind, loop.DescribeCommand(kind, values.ReviewCommand, policy, scope)))
 	}
 	return append(lines, "  every other kind uses the built-in review prompt")
 }

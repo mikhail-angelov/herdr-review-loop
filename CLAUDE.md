@@ -8,7 +8,9 @@
 other: a reviewer writes structured findings to `.review-loop/run/round-NN/review.json`, the loop
 gives each finding an id, the author applies what it agrees with and decides every id in
 `decisions.json`, and the loop repeats until the review comes back clean, the round budget runs out,
-or an agent gets stuck. Scope is always the uncommitted working tree.
+or an agent gets stuck. Every scope ends at the working tree, because that is all the author may
+edit; what differs is where the comparison starts — `HEAD` for the uncommitted changes, the merge
+base for a whole branch.
 
 The run directory is hidden from git through `.git/info/exclude`, so nothing the loop writes reaches
 the diff under review or a round checkpoint. Everything a run produced is archived under the plugin
@@ -68,6 +70,10 @@ go test -run TestName ./internal/loop/
     repository is inside the diff under review. `finish` clears it.
   - `policy.go` / `scope.go` — the round policy and what is under review, each turning configuration
     into the block the reviewer and the author are sent. The last `rounds` entry repeats forever.
+    A branch scope resolves its merge base once, before the first round, so a base branch that moves
+    mid-run cannot move what the next round reviews — and it never delegates to a kind's own review
+    command, because those scope themselves to the uncommitted changes and would review less than
+    the run promised.
   - `adapter.go` — kind → its own review command, plus the capture step that turns what the command
     rendered into the host UI into `review.json`. A kind earns an entry only when its command
     reviews in the pane and reports into that session's own context; everything else, `claude`

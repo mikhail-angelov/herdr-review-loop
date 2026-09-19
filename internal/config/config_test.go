@@ -124,8 +124,15 @@ func TestParseAcceptsEveryFieldAndRejectsInvalidValues(t *testing.T) {
 	if _, err := Parse("profile", "../escape"); err == nil {
 		t.Error("profile accepted a path")
 	}
-	if _, err := Parse("scope", "branch"); err == nil {
-		t.Error("scope accepted an unsupported spec")
+	for _, spec := range []string{"branch", "branch:origin/main", "text:docs/plan.md"} {
+		if _, err := Parse("scope", spec); err != nil {
+			t.Errorf("scope rejected %q: %v", spec, err)
+		}
+	}
+	for _, spec := range []string{"commits:HEAD~3..", "branch:", "branch:-x", "staged"} {
+		if _, err := Parse("scope", spec); err == nil {
+			t.Errorf("scope accepted %q", spec)
+		}
 	}
 }
 

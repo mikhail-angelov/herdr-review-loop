@@ -218,8 +218,14 @@ func roundOfRef(ref string) (int, bool) {
 }
 
 func (c Checkpoints) git(ctx context.Context, env []string, args ...string) (string, error) {
+	return git(ctx, c.Repository, env, args...)
+}
+
+// git runs one command in a repository and returns its trimmed output. A nil environment is
+// inherited; the checkpoint machinery passes one only to point git at a throwaway index.
+func git(ctx context.Context, repository string, env []string, args ...string) (string, error) {
 	//nolint:gosec // git and its subcommands are literals here; only the repository path varies
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", c.Repository}, args...)...)
+	command := exec.CommandContext(ctx, "git", append([]string{"-C", repository}, args...)...)
 	command.Env = env
 	var out, failure bytes.Buffer
 	command.Stdout, command.Stderr = &out, &failure

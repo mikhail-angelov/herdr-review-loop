@@ -96,7 +96,7 @@ type Field struct {
 func Fields() []Field {
 	return []Field{
 		{"profile", "profile", "round policy to run; a file under profiles/", "optional"},
-		{"scope", "scope", "worktree, or text:<path> to review one document", "optional"},
+		{"scope", "scope", "worktree, branch[:<ref>] for a whole branch, or text:<path>", "optional"},
 		{"reviewer.kind", "reviewer kind", "agent kind that reviews; empty uses another kind", "optional"},
 		{"reviewer.name", "reviewer name", "agent name or pane id; wins over reviewer kind", "optional"},
 		{"max_iterations", "max iterations", "review/apply rounds before giving up", "count"},
@@ -348,20 +348,29 @@ const (
 	GateBoth   = "both"
 )
 
-// ScopeWorktree reviews the uncommitted changes; ScopeTextPrefix names a document to review whole.
+// The scopes a run can review: the uncommitted changes, everything a branch changes relative to
+// the branch it came from, or one document whole.
 const (
-	ScopeWorktree   = "worktree"
-	ScopeTextPrefix = "text:"
+	ScopeWorktree     = "worktree"
+	ScopeBranch       = "branch"
+	ScopeBranchPrefix = "branch:"
+	ScopeTextPrefix   = "text:"
 )
 
 func parseScope(text string) (any, error) {
-	if text == ScopeWorktree {
+	if text == ScopeWorktree || text == ScopeBranch {
+		return text, nil
+	}
+	if ref, isBranch := strings.CutPrefix(text, ScopeBranchPrefix); isBranch {
+		if strings.TrimSpace(ref) == "" || strings.HasPrefix(ref, "-") {
+			return nil, fmt.Errorf("expected %s<ref>, such as %sorigin/main", ScopeBranchPrefix, ScopeBranchPrefix)
+		}
 		return text, nil
 	}
 	if path, ok := strings.CutPrefix(text, ScopeTextPrefix); ok && strings.TrimSpace(path) != "" {
 		return text, nil
 	}
-	return nil, fmt.Errorf("expected %s or %s<path>", ScopeWorktree, ScopeTextPrefix)
+	return nil, fmt.Errorf("expected %s, %s[:<ref>] or %s<path>", ScopeWorktree, ScopeBranch, ScopeTextPrefix)
 }
 
 // Apply updates one parsed setting. Keeping this next to Parse ensures the pane and

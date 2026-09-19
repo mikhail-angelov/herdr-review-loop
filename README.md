@@ -112,7 +112,7 @@ make prep             # fmt + vet + lint + test — run before every commit
 | `review --dry-run` | Prints the pair, scope, profile and round policy without taking a lock or writing files. |
 | `review --one-shot` | Runs one review, has the author present it, then waits for an Apply, Cancel or custom instruction from the panel before one author turn. It never re-reviews. |
 | `review --profile NAME` | Selects a round policy from `profiles/`, defaulting to `default`. |
-| `review --scope SPEC` | `worktree` (default), or `text:<path>` to review one document whole. |
+| `review --scope SPEC` | `worktree` (default), `branch[:<ref>]` for everything a branch changes relative to the branch it came from, or `text:<path>` to review one document whole. |
 | `show [--run ID] [--round N] [--format md\|json]` | Renders an archived round — by default the last round of this repository's most recent run. |
 | `config` | Prints the resolved configuration with the winning layer per key, the round policy, the profiles and the pair. Runs nothing. |
 | `init` | Writes `.review-loop/` into this repository: a `config.json` holding only what you override, the profile you are using, and `config.example.md` documenting every key. Never overwrites what is already there. |
@@ -412,7 +412,7 @@ Durations use Go notation such as `30m` or `90s`.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `profile` | `default` | Round policy to run: a file under `profiles/`. |
-| `scope` | `worktree` | What is reviewed: the uncommitted changes, or `text:<path>` for one document whole. |
+| `scope` | `worktree` | What is reviewed: `worktree` is the uncommitted changes; `branch` is everything this branch changes relative to the branch it came from, committed and uncommitted alike, with `branch:<ref>` naming that branch yourself; `text:<path>` is one document whole. |
 | `reviewer.kind` | empty | Reviewer agent kind; empty chooses a different kind. |
 | `reviewer.name` | empty | Reviewer name or pane id; overrides `reviewer.kind`. |
 | `max_iterations` | `10` | Maximum review rounds. |

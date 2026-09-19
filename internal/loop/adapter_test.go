@@ -73,7 +73,29 @@ func TestARoundMayNameADifferentCommand(t *testing.T) {
 	if !strings.HasPrefix(native.Command, "/security-review ") {
 		t.Fatalf("command %q", native.Command)
 	}
-	if command := DescribeCommand("claude", nil, Policy(rounds, 1)); command != "/security-review" {
+	if command := DescribeCommand("claude", nil, Policy(rounds, 1), worktree); command != "/security-review" {
 		t.Fatalf("described command %q", command)
+	}
+}
+
+// A native review command scopes itself, and the ones this table knows scope themselves to the
+// uncommitted changes. Delegating a branch review to one would review the working tree and call it
+// the branch, so those rounds take the built-in prompt — unless the round names a command itself,
+// which is the user saying their command does something else.
+func TestABranchReviewIsNotDelegatedToACommandThatScopesItself(t *testing.T) {
+	branch := Scope{Spec: "branch:main", BaseRef: "main", Base: "abc123"}
+	if _, delegated := Adapt("codex", nil, Policy(nil, 1), branch, "/review.json", nil); delegated {
+		t.Fatal("a branch review was handed to a command that only sees uncommitted changes")
+	}
+	if command := DescribeCommand("codex", nil, Policy(nil, 1), branch); command != "built-in review prompt" {
+		t.Fatalf("described %q, want the built-in prompt", command)
+	}
+	rounds := []config.Round{{Command: "/review --base main"}}
+	native, delegated := Adapt("codex", nil, Policy(rounds, 1), branch, "/review.json", nil)
+	if !delegated || !strings.HasPrefix(native.Command, "/review --base main") {
+		t.Fatalf("a command the round named was refused: %#v %t", native, delegated)
+	}
+	if !strings.Contains(native.Command, "abc123") {
+		t.Fatalf("the instructions do not name the base commit: %q", native.Command)
 	}
 }

@@ -676,16 +676,30 @@ justified and gets its own specification then, with those runs as evidence. Not 
 | Spec | Reviewed | Native mapping | The author edits |
 |---|---|---|---|
 | `worktree` | uncommitted changes (default) | `codex review --uncommitted` | code |
+| `branch[:<ref>]` | everything this branch changes relative to the branch it came from | none — the built-in prompt | code |
 | `text:<path>` | one document, whole | custom instruction | the document |
 
-Two, because the author may only edit the working tree (§2.2: no commits, no amends, no
-staging), and that makes the working tree the end of every comparison worth offering. A scope
-that stopped at the index or at `HEAD` could not see the author's fixes at all — round two
-would re-review a byte-identical diff and the loop could never converge — so every candidate
-scope had to be redefined as "…as it now stands in the working tree", at which point it is
-`worktree` wearing a different name and a longer paragraph. `staged`, `branch[:base]`,
-`commits:<range>` and `paths:<glob>` are therefore all in the same place: implemented when
-someone asks and can say what they would get that `worktree` does not give them (§2.2).
+Every scope **ends** at the working tree, because the author may only edit the working tree
+(§2.2: no commits, no amends, no staging). A scope that ended at the index or at `HEAD` could
+not see the author's fixes at all — round two would re-review a byte-identical diff and the
+loop could never converge. What a scope may vary is where the comparison **starts**.
+
+`worktree` starts at `HEAD`. `branch` starts at the commit this branch and its base last had in
+common, which is the one thing `worktree` genuinely cannot express: work that is already
+committed on the branch is invisible to it, and a branch is how the work under review usually
+arrives. The base is named with `branch:<ref>` or detected — `origin/HEAD`, then `origin/main`,
+`origin/master`, `main`, `master` — and a candidate that resolves to `HEAD` itself is skipped
+rather than used, since reviewing the uncommitted changes under a name that promised the whole
+branch is worse than refusing. The merge base is resolved **once, before the first round**: a
+base branch that moves during a run must not move what the round after it reviews.
+
+A branch scope does not delegate to a kind's own review command. Those commands scope
+themselves, and every command in the §6.4 table scopes itself to the uncommitted changes — a
+strict subset of this scope — so delegating would review less than the run promised while
+reporting on all of it. A command the round itself names is the user's own statement about
+their own CLI and is taken at it. `staged`, `commits:<range>` and `paths:<glob>` remain where
+`branch` was: implemented when someone asks and can say what they would get that these do not
+give them (§2.2).
 
 `text:` earns its place by being genuinely different — the reviewed thing is a whole document
 rather than a diff, and the author edits that document. Its round `instructions` replace

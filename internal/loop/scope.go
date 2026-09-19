@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -8,10 +10,14 @@ import (
 	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
 )
 
-// Scope is what a run reviews. There are two, because the author may only edit the working tree,
-// which makes the working tree the end of every comparison worth offering: a scope that stopped at
-// the index or at HEAD could not see the author's fixes, so round two would re-review a
-// byte-identical diff and the loop could never converge.
+// Scope is what a run reviews. Every scope ends at the working tree, because the author may only
+// edit the working tree: a comparison that stopped at the index or at HEAD could not see the
+// author's fixes, so round two would re-review a byte-identical diff and the loop could never
+// converge. What differs between scopes is where the comparison starts.
+//
+// worktree starts at HEAD: the uncommitted changes. branch starts at the commit this branch and
+// its base last had in common, so the whole of a branch's work is reviewed at once, committed and
+// uncommitted alike — and the author's fixes are included whether it commits them or not.
 //
 // text: earns its place by being genuinely different — the reviewed thing is a whole document
 // rather than a diff, and the author edits that document.
@@ -21,6 +27,11 @@ type Scope struct {
 	Document string
 	// Absolute is the path the agents are given, which they can write from any working directory.
 	Absolute string
+	// BaseRef is the branch a branch scope is judged against, and Base the commit it and HEAD last
+	// had in common. Base is resolved once, before the first round: a base branch that moves
+	// mid-run must not move what the round after it reviews.
+	BaseRef string
+	Base    string
 }
 
 // ParseScope reads a scope specification. It does not touch the filesystem; Resolve does that,
@@ -30,9 +41,20 @@ func ParseScope(spec string) (Scope, error) {
 	if spec == "" || spec == config.ScopeWorktree {
 		return Scope{Spec: config.ScopeWorktree}, nil
 	}
+	if spec == config.ScopeBranch || spec == config.ScopeBranchPrefix {
+		return Scope{Spec: config.ScopeBranch}, nil
+	}
+	if ref, isBranch := strings.CutPrefix(spec, config.ScopeBranchPrefix); isBranch {
+		ref = strings.TrimSpace(ref)
+		// a ref is passed to git as an argument, so a leading dash would be read as a flag
+		if strings.HasPrefix(ref, "-") {
+			return Scope{}, fmt.Errorf("scope base %q is not a ref", ref)
+		}
+		return Scope{Spec: config.ScopeBranchPrefix + ref, BaseRef: ref}, nil
+	}
 	path, isText := strings.CutPrefix(spec, config.ScopeTextPrefix)
 	if !isText {
-		return Scope{}, fmt.Errorf("unknown scope %q: expected %s or %s<path>", spec, config.ScopeWorktree, config.ScopeTextPrefix)
+		return Scope{}, fmt.Errorf("unknown scope %q: expected %s, %s[:<ref>] or %s<path>", spec, config.ScopeWorktree, config.ScopeBranch, config.ScopeTextPrefix)
 	}
 	path = strings.TrimSpace(strings.TrimPrefix(filepath.ToSlash(path), "./"))
 	if path == "" {
@@ -48,9 +70,22 @@ func ParseScope(spec string) (Scope, error) {
 // Text reports whether this run reviews a document rather than a diff.
 func (s Scope) Text() bool { return s.Document != "" }
 
+// Branch reports whether this run reviews a branch rather than the uncommitted changes alone.
+func (s Scope) Branch() bool {
+	return s.Spec == config.ScopeBranch || strings.HasPrefix(s.Spec, config.ScopeBranchPrefix)
+}
+
 // Resolve checks that the scope names something reviewable and fills in the absolute path the
 // agents are given. A document that is not there is the user's setup, so it fails before the lock.
-func (s Scope) Resolve(dir *RunDir) (Scope, error) {
+func (s Scope) Resolve(ctx context.Context, dir *RunDir, repository string) (Scope, error) {
+	if s.Branch() {
+		base, ref, err := resolveBase(ctx, repository, s.BaseRef)
+		if err != nil {
+			return Scope{}, err
+		}
+		s.Base, s.BaseRef = base, ref
+		return s, nil
+	}
 	if !s.Text() {
 		return s, nil
 	}
@@ -62,13 +97,70 @@ func (s Scope) Resolve(dir *RunDir) (Scope, error) {
 	return s, nil
 }
 
+// baseCandidates are the refs a branch scope tries when none was named, in the order a branch is
+// most likely to have come from one. The remote's own default branch is asked for first, because
+// it is the only one of these the repository actually states rather than the loop guessing.
+var baseCandidates = []string{"origin/main", "origin/master", "main", "master"}
+
+// resolveBase finds the commit this branch left its base at. A candidate that is HEAD itself is
+// skipped rather than used: it would mean the base is this branch, and the run would silently
+// review the uncommitted changes under a name that promised the whole branch.
+func resolveBase(ctx context.Context, repository, ref string) (base, named string, err error) {
+	head, err := git(ctx, repository, nil, "rev-parse", "HEAD")
+	if err != nil {
+		return "", "", fmt.Errorf("scope %s needs a git repository with a commit: %w", config.ScopeBranch, err)
+	}
+	if ref != "" {
+		base, err = mergeBase(ctx, repository, ref, head)
+		return base, ref, err
+	}
+	for _, candidate := range append(remoteDefaultBranch(ctx, repository), baseCandidates...) {
+		base, err = mergeBase(ctx, repository, candidate, head)
+		if err != nil || base == head {
+			continue
+		}
+		return base, candidate, nil
+	}
+	return "", "", errors.New("could not tell which branch this one came from: name it, as `--scope branch:<ref>`")
+}
+
+// remoteDefaultBranch is what origin says its default branch is, when it says anything.
+func remoteDefaultBranch(ctx context.Context, repository string) []string {
+	target, err := git(ctx, repository, nil, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+	if err != nil || target == "" {
+		return nil
+	}
+	return []string{target}
+}
+
+func mergeBase(ctx context.Context, repository, ref, head string) (string, error) {
+	if _, err := git(ctx, repository, nil, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err != nil {
+		return "", fmt.Errorf("scope base %q is not a commit this repository has", ref)
+	}
+	base, err := git(ctx, repository, nil, "merge-base", ref, head)
+	if err != nil {
+		return "", fmt.Errorf("%s and HEAD have no common commit: %w", ref, err)
+	}
+	return base, nil
+}
+
 // Command is what produces the reviewed material, recorded in the manifest so an archived run says
 // what it was looking at without the tree it ran against.
 func (s Scope) Command() string {
 	if s.Text() {
 		return "read " + s.Document
 	}
-	return "git status --porcelain && git diff HEAD"
+	return "git status --porcelain && git diff " + s.start()
+}
+
+// start is where the comparison begins: HEAD for the uncommitted changes, and the merge base for a
+// whole branch. It is a commit id rather than a ref for the branch scope, so every round of a run
+// is judged against the same point even if the base branch moves while the run is going.
+func (s Scope) start() string {
+	if s.Branch() && s.Base != "" {
+		return s.Base
+	}
+	return "HEAD"
 }
 
 // Review is the block that tells the reviewer what to read. For a diff the loop names the command
@@ -78,6 +170,9 @@ func (s Scope) Command() string {
 // says what document review means, which is the one place the loop still says what to look for: no
 // native review command covers it.
 func (s Scope) Review() string {
+	if s.Branch() {
+		return fmt.Sprintf("Review everything this branch changes relative to %s: read `git status --porcelain` and `git diff %s`, and read any untracked file they name in full. That commit is where this branch and %s last agreed, so the diff is the whole of the branch's work — what is committed on it and what is not yet committed alike.", s.BaseRef, s.start(), s.BaseRef)
+	}
 	if !s.Text() {
 		return "Review the uncommitted changes in the working tree: read `git status --porcelain` and `git diff HEAD`, and read any untracked file they name in full."
 	}

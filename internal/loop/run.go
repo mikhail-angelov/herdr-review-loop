@@ -97,7 +97,7 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 	defer func() { _ = runDir.Close() }()
 	scope, err := ParseScope(r.Config.Scope)
 	if err == nil {
-		scope, err = scope.Resolve(runDir)
+		scope, err = scope.Resolve(ctx, runDir, repository)
 	}
 	if err != nil {
 		return Exit(ExitTool, err)
@@ -874,7 +874,7 @@ func (r Run) manifest(ctx context.Context, state *session, author, reviewer herd
 	rounds := make([]ManifestRound, 0, r.Config.MaxIterations)
 	for round := 1; round <= r.Config.MaxIterations; round++ {
 		policy := Policy(r.Config.Rounds, round)
-		rounds = append(rounds, ManifestRound{Round: round, Command: DescribeCommand(reviewer.Kind, r.Config.ReviewCommand, policy), Level: policy.Describe()})
+		rounds = append(rounds, ManifestRound{Round: round, Command: DescribeCommand(reviewer.Kind, r.Config.ReviewCommand, policy, state.scope), Level: policy.Describe()})
 	}
 	return Manifest{
 		Run:           record.ID,
@@ -923,7 +923,7 @@ func (r Run) describe(author, reviewer herdr.Agent, runDir *RunDir, scope Scope)
 	shown := min(r.Config.MaxIterations, max(len(r.Config.Rounds), 1))
 	for round := 1; round <= shown; round++ {
 		policy := Policy(r.Config.Rounds, round)
-		lines = append(lines, fmt.Sprintf("round %d:  %s — %s", round, DescribeCommand(reviewer.Kind, r.Config.ReviewCommand, policy), policy.Describe()))
+		lines = append(lines, fmt.Sprintf("round %d:  %s — %s", round, DescribeCommand(reviewer.Kind, r.Config.ReviewCommand, policy, scope), policy.Describe()))
 	}
 	if shown < r.Config.MaxIterations {
 		lines = append(lines, fmt.Sprintf("rounds %d-%d repeat round %d", shown+1, r.Config.MaxIterations, shown))

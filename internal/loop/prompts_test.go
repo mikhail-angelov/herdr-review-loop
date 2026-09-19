@@ -151,7 +151,7 @@ func TestParseScopeRejectsWhatItCannotReach(t *testing.T) {
 	if scope, err := ParseScope(""); err != nil || scope.Text() {
 		t.Fatalf("an empty scope should be the worktree: %#v %v", scope, err)
 	}
-	for _, spec := range []string{"branch", "text:", "text:/etc/passwd", "text:../outside.md", "commits:HEAD~3.."} {
+	for _, spec := range []string{"text:", "text:/etc/passwd", "text:../outside.md", "commits:HEAD~3.."} {
 		if _, err := ParseScope(spec); err == nil {
 			t.Errorf("ParseScope(%q) was accepted", spec)
 		}

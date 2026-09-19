@@ -24,7 +24,7 @@ type runClient struct {
 	prompted  []string
 	prompts   []string
 	sentText  []string
-	onFocus   func(string) error
+	onTurn    func(string) error
 }
 
 func (c *runClient) AgentList(context.Context) ([]herdr.Agent, error) { return c.agents, nil }
@@ -42,6 +42,11 @@ func (c *runClient) AgentWait(_ context.Context, target string, _ time.Duration)
 
 func (c *runClient) AgentPrompt(_ context.Context, target, prompt string, _ time.Duration) (herdr.Agent, error) {
 	c.prompted = append(c.prompted, target)
+	if c.onTurn != nil {
+		if err := c.onTurn(target); err != nil {
+			return herdr.Agent{}, err
+		}
+	}
 	c.prompts = append(c.prompts, prompt)
 	answers := &c.reviews
 	name := reviewFile
@@ -66,12 +71,7 @@ func (c *runClient) AgentPrompt(_ context.Context, target, prompt string, _ time
 	return c.AgentGet(context.Background(), target)
 }
 
-func (c *runClient) AgentFocus(_ context.Context, target string) error {
-	if c.onFocus == nil {
-		return nil
-	}
-	return c.onFocus(target)
-}
+func (*runClient) AgentFocus(context.Context, string) error            { return nil }
 func (*runClient) AgentSendKeys(context.Context, string, string) error { return nil }
 func (c *runClient) PaneSendText(_ context.Context, _, value string) error {
 	c.sentText = append(c.sentText, value)
@@ -85,7 +85,10 @@ func (c *runClient) PaneRead(context.Context, string) (string, error) {
 	return c.sentText[len(c.sentText)-1], nil
 }
 func (*runClient) WorkspaceReportMetadata(context.Context, string, string, bool) error { return nil }
-func (*runClient) NotificationShow(context.Context, string, string) error              { return nil }
+func (*runClient) NotificationShow(context.Context, string, string, string) error      { return nil }
+func (*runClient) PaneReportMetadata(context.Context, string, string, string, bool) error {
+	return nil
+}
 func (*runClient) PluginPaneOpen(context.Context, string, string) (string, error) {
 	return "", errors.New("panel unavailable")
 }
@@ -234,7 +237,7 @@ func TestRunRecordsWhatTheAuthorPhaseChanged(t *testing.T) {
 		  "decisions":[{"id":"r01-1","action":"applied","note":"added one"}]}`},
 	}
 	// the author edits a tracked file and creates a new one, which is what a fix usually looks like
-	client.onFocus = func(target string) error {
+	client.onTurn = func(target string) error {
 		if target != "author" {
 			return nil
 		}
@@ -384,7 +387,7 @@ func TestOneShotReviewWaitsForThePanelThenRunsOneAuthorPhase(t *testing.T) {
 	go func() { done <- run.Execute(context.Background(), false) }()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, pending := PendingOneShot(state, "workspace", repository); pending {
+		if _, pending := PendingRequest(state, "workspace", repository); pending {
 			break
 		}
 		select {
@@ -397,7 +400,8 @@ func TestOneShotReviewWaitsForThePanelThenRunsOneAuthorPhase(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := ChooseOneShot(state, "workspace", repository, OneShotApply, ""); err != nil {
+	pending, _ := PendingRequest(state, "workspace", repository)
+	if err := Answer(state, pending, ChoiceApply, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; ExitCode(err) != ExitFindings {
@@ -406,7 +410,7 @@ func TestOneShotReviewWaitsForThePanelThenRunsOneAuthorPhase(t *testing.T) {
 	if got, want := client.prompted, []string{"reviewer", "author", "author"}; !slices.Equal(got, want) {
 		t.Fatalf("prompted %#v, want %#v", got, want)
 	}
-	if _, pending := PendingOneShot(state, "workspace", repository); pending {
+	if _, pending := PendingRequest(state, "workspace", repository); pending {
 		t.Fatal("one-shot choice was not cleared")
 	}
 	report := latestReport(t, state)

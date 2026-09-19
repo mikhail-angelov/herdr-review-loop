@@ -65,14 +65,15 @@ type Feed struct {
 	Lines   []string
 }
 
-// LatestFeed builds the panel's view of the newest recorded run. A state directory with no runs
-// yet produces an empty feed rather than an error: there is nothing wrong, there is just nothing.
-func LatestFeed(stateDir string, limit int) Feed {
-	runs := ListRuns(stateDir)
-	if len(runs) == 0 {
+// LatestFeed builds the panel's view of the newest run recorded for one repository. The state
+// directory is shared by every workspace the plugin runs in, so the repository is what scopes a
+// panel to its own work: a space that has never been reviewed shows nothing, rather than showing
+// the last thing that happened somewhere else. No runs at all is that same nothing, not an error.
+func LatestFeed(stateDir, repository string, limit int) Feed {
+	record, found := LatestRun(stateDir, repository)
+	if !found {
 		return Feed{}
 	}
-	record := runs[0]
 	feed := Feed{Outcome: record.Outcome}
 	if feed.Outcome == "running" {
 		feed.Outcome = ""

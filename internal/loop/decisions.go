@@ -167,6 +167,20 @@ func (j *Journal) Record(round int, review Review, decisions Decisions) {
 	}
 }
 
+// Restore seeds the journal with what earlier runs settled. The order is kept, so a point argued
+// out three runs ago still reaches the reviewer before one argued out yesterday.
+func (j *Journal) Restore(entries []Settled) {
+	if j.entries == nil {
+		j.entries = map[string]Settled{}
+	}
+	for _, entry := range entries {
+		if _, seen := j.entries[entry.Fingerprint]; !seen {
+			j.order = append(j.order, entry.Fingerprint)
+		}
+		j.entries[entry.Fingerprint] = entry
+	}
+}
+
 // Entries lists what has been settled, oldest first.
 func (j *Journal) Entries() []Settled {
 	entries := make([]Settled, 0, len(j.order))

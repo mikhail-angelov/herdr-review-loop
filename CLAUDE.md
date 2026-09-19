@@ -45,6 +45,9 @@ go test -run TestName ./internal/loop/
 - `internal/herdr` — the Herdr CLI as a Go API. `Client` shells out per call and decodes the JSON
   envelope; `Error` carries Herdr's error code so callers branch with `errors.As`. `Environment`
   decodes the plugin context the host exports; `PickReviewer` chooses the second agent.
+  `events.go` is the one exception to the shell-per-call rule: an events subscription is a
+  connection held open, so it speaks the socket at `HERDR_SOCKET_PATH` directly. It carries no
+  data — a notice means "look again" — and a session without a socket simply never wakes early.
 - `internal/loop` — the loop itself.
   - `run.go` — `Run.Execute` owns the lifecycle and holds the run lock; `reviewPhase` and `fixPhase`
     are one phase each, and each runs the degradation ladder: parse, one reformat turn, then a
@@ -56,6 +59,13 @@ go test -run TestName ./internal/loop/
     loop; `Review.Resolve` is where a status is weighed against its arrays, and it is the only place
     a clean verdict is decided. `Review.Filter` applies `min_verdict` *after* the ids and *before*
     `Resolve`, so a round whose findings were all withheld is clean and says why.
+  - `control.go` / `gate.go` — where a run stops for a person. `pending.json` is written only by
+    the run, `control.json` only by the panel, and a choice names the request it answers, so a
+    request and an answer never overwrite each other and a stale answer is ignored rather than
+    obeyed. `gate` is the only place the loop waits while nothing is wrong.
+  - `settled.go` — the journal of rejected and deferred findings, carried across runs for one
+    repository. It lives in the state directory, never in the repository: anything inside the
+    repository is inside the diff under review. `finish` clears it.
   - `policy.go` / `scope.go` — the round policy and what is under review, each turning configuration
     into the block the reviewer and the author are sent. The last `rounds` entry repeats forever.
   - `adapter.go` — kind → its own review command, plus the capture step that turns what the command
@@ -66,6 +76,9 @@ go test -run TestName ./internal/loop/
     `parse_fallback` events are the trail.
   - `archive.go` / `render.go` — the per-run archive and the single renderer `show` and the history
     pane both call.
+  - `run.go`'s `label` publishes each agent's phase as pane metadata instead of focusing its pane.
+    A run that stole focus on every attempt moved the user's cursor a dozen times; the sidebar says
+    the same thing for both agents at once. Focus is taken only when an agent is blocked.
   - `watchdog.go` — `WatchStall` cancels a phase whose agent has produced no observable output for
     `timeouts.stall`; the stall is a retry, not a terminal failure.
   - `stuck.go` — a fingerprint applied in three consecutive rounds and raised again each time is a
@@ -83,8 +96,15 @@ go test -run TestName ./internal/loop/
   one name per setting. A malformed setting produces a warning and the layer below, never a failure:
   `stop` has to work even when `config.json` is broken. `Save` merges into the existing file rather
   than replacing it, so a save from the pane never drops a hand-written `rounds`.
-- `internal/ui` — the three panes (panel, settings, history) over a small raw-mode terminal. Each
-  falls back to a plain-text dump when its file is not a TTY.
+- `internal/ui` — the panes (panel, settings, history) over a small raw-mode terminal, plus the
+  findings and diff panes, which are the user's own pager over what `view` renders, each in a tab of
+  its own. Each falls back to a plain-text dump when its file is not a TTY. The panel redraws on a
+  Herdr event when there is one and on its own tick when there is not; it holds no loop state, so
+  closing it cancels nothing. It shows only its own repository's runs and only a loop its own
+  workspace owns: the state directory is shared by every space the plugin runs in.
+  `tui.go`'s `shortcut` is what every pane matches keys against — the Latin letter engraved on the
+  physical key that was pressed, lower case. A terminal delivers characters, never scancodes, so a
+  layout is a translation table; adding one is a pair of strings, never a branch per key.
 - `bin/*.sh` — the entry points named by `herdr-plugin.toml`.
 
 ## Conventions

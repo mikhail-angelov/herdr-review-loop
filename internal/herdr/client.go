@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -220,9 +221,17 @@ func (c Client) PaneRead(ctx context.Context, pane string) (string, error) {
 	return c.Text(ctx, "pane", "read", pane, "--source", "visible", "--format", "text")
 }
 
+// MetadataSource identifies this plugin's metadata to Herdr, so what the loop publishes is
+// replaced by the loop and never mixed with what the agent integration reports.
+const MetadataSource = "plugin:herdr-review-loop"
+
+// metadataTTL bounds how long a label outlives the run that set it. A loop killed with SIGKILL
+// clears nothing, and a pane labeled "review 2/5" forever is worse than one labeled nothing.
+const metadataTTL = 10 * time.Minute
+
 // WorkspaceReportMetadata publishes the loop's phase as a workspace token, or clears it.
 func (c Client) WorkspaceReportMetadata(ctx context.Context, workspace, phase string, clearToken bool) error {
-	args := []string{"workspace", "report-metadata", workspace, "--source", "plugin:herdr-review-loop"}
+	args := []string{"workspace", "report-metadata", workspace, "--source", MetadataSource}
 	if clearToken {
 		args = append(args, "--clear-token", "review")
 	} else {
@@ -231,10 +240,27 @@ func (c Client) WorkspaceReportMetadata(ctx context.Context, workspace, phase st
 	return c.void(ctx, args...)
 }
 
-// NotificationShow raises a desktop notification through Herdr.
-func (c Client) NotificationShow(ctx context.Context, title, body string) error {
-	_, err := c.Call(ctx, "notification", "show", title, "--body", body)
+// NotificationShow raises a desktop notification through Herdr. The sound is what carries the
+// outcome to a user who is looking at another workspace, so it is not optional.
+func (c Client) NotificationShow(ctx context.Context, title, body, sound string) error {
+	_, err := c.Call(ctx, "notification", "show", title, "--body", body, "--sound", sound)
 	return err
+}
+
+// PaneReportMetadata labels an agent's pane with what the loop currently has it doing, or clears
+// the label again. It is how a run stays legible from the sidebar, without taking anyone's focus:
+// the title names the role, the state label names the phase.
+func (c Client) PaneReportMetadata(ctx context.Context, pane, title, phase string, reset bool) error {
+	args := []string{"pane", "report-metadata", pane, "--source", MetadataSource}
+	if reset {
+		args = append(args, "--clear-title", "--clear-state-labels")
+		return c.void(ctx, args...)
+	}
+	args = append(args, "--title", title, "--ttl-ms", strconv.Itoa(int(metadataTTL.Milliseconds())))
+	for _, status := range []string{"working", "idle", "done", "blocked", "unknown"} {
+		args = append(args, "--state-label", status+"="+phase)
+	}
+	return c.void(ctx, args...)
 }
 
 // PaneLayout describes the geometry of a window, used to size the plugin pane relative to its area.

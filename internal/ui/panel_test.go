@@ -20,7 +20,7 @@ func TestPanelViewClipsAndKeepsHints(t *testing.T) {
 }
 
 func TestPanelViewShowsOneShotChoicesWhenItIsWaiting(t *testing.T) {
-	view := PanelView(PanelState{Running: true, OneShotPending: true}, 80, 12)
+	view := PanelView(PanelState{Running: true, Pending: PendingOneShot}, 80, 12)
 	for _, hint := range []string{"a apply", "c cancel", "i instruction"} {
 		if !strings.Contains(view, hint) {
 			t.Fatalf("missing %q in %q", hint, view)
@@ -29,14 +29,15 @@ func TestPanelViewShowsOneShotChoicesWhenItIsWaiting(t *testing.T) {
 }
 
 func TestPanelKeysSubmitAOneShotChoiceOrCustomInstruction(t *testing.T) {
-	actions := PanelActions{
-		Apply:  func() string { return "applied" },
-		Cancel: func() string { return "canceled" },
-		Custom: func(text string) string { return "custom: " + text },
-	}
-	state := PanelState{OneShotPending: true}
+	actions := PanelActions{Answer: func(action, text string) string {
+		if text == "" {
+			return action
+		}
+		return action + ": " + text
+	}}
+	state := PanelState{Pending: PendingOneShot}
 	message, custom, input, exit := panelKey("a", state, actions, "", false, "")
-	if message != "applied" || custom || input != "" || exit {
+	if message != "apply" || custom || input != "" || exit {
 		t.Fatalf("apply = %q %t %q %t", message, custom, input, exit)
 	}
 	message, custom, input, exit = panelKey("i", state, actions, "", false, "")
@@ -48,7 +49,7 @@ func TestPanelKeysSubmitAOneShotChoiceOrCustomInstruction(t *testing.T) {
 		t.Fatalf("instruction input = %q %t %q %t", message, custom, input, exit)
 	}
 	message, custom, input, exit = panelKey("\n", state, actions, message, custom, input)
-	if message != "custom: x" || custom || input != "" || exit {
+	if message != "instruct: x" || custom || input != "" || exit {
 		t.Fatalf("instruction submit = %q %t %q %t", message, custom, input, exit)
 	}
 }
@@ -104,5 +105,17 @@ func TestSettingsViewDoesNotRepeatKeyHelpInMessage(t *testing.T) {
 	view := pane.view("", 80)
 	if got := strings.Count(view, keys); got != 1 {
 		t.Fatalf("key help appears %d times, want once: %q", got, view)
+	}
+}
+
+func TestPanelOffersNoReviewWhileAnotherSpaceHoldsTheLoop(t *testing.T) {
+	state := PanelState{Busy: true}
+	view := PanelView(state, 80, 12)
+	if strings.Contains(view, "r review") || strings.Contains(view, "o one-shot") {
+		t.Fatalf("a busy panel offered to start a review: %q", view)
+	}
+	actions := PanelActions{Review: func() string { return "started" }, OneShot: func() string { return "started" }}
+	if message, _, _, _ := panelKey("r", state, actions, "", false, ""); message == "started" {
+		t.Fatal("r started a review the lock would have refused")
 	}
 }

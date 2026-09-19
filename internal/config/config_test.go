@@ -98,6 +98,7 @@ func TestParseAcceptsEveryFieldAndRejectsInvalidValues(t *testing.T) {
 		"reviewer.name":      "pane-1",
 		"max_iterations":     "2",
 		"min_verdict":        "plausible",
+		"gate":               "round",
 		"timeouts.review":    "90s",
 		"timeouts.fix":       "1m",
 		"timeouts.stall":     "30s",
@@ -111,7 +112,7 @@ func TestParseAcceptsEveryFieldAndRejectsInvalidValues(t *testing.T) {
 			t.Errorf("%s: rejected valid value: %v", field.Key, err)
 		}
 	}
-	empty := []string{"max_iterations", "min_verdict", "scope", "timeouts.review", "timeouts.fix", "timeouts.stall", "retries", "archive.keep", "archive.raw_output"}
+	empty := []string{"max_iterations", "min_verdict", "gate", "scope", "timeouts.review", "timeouts.fix", "timeouts.stall", "retries", "archive.keep", "archive.raw_output"}
 	for _, key := range empty {
 		if _, err := Parse(key, ""); err == nil {
 			t.Errorf("%s: accepted empty invalid value", key)

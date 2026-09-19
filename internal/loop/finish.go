@@ -80,6 +80,9 @@ func Finish(stateDir, workspace, repository string) (FinishResult, error) {
 	if result.HadRun {
 		result.Report, result.Reported = ReadReport(stateDir, result.Run.ID)
 	}
+	// the changes are being handed on, so the next review starts from the code rather than from
+	// the arguments this one had about it
+	ClearSettled(stateDir)
 	present, err := runDir.Exists()
 	if err != nil {
 		return FinishResult{}, err

@@ -25,6 +25,10 @@ type Environment struct {
 	ConfigDir string
 	Binary    string
 	PaneID    string
+	// Socket is the session's event socket. It is the one Herdr surface reached without the CLI,
+	// and only for events: a subscription is a connection held open, which a process per call
+	// cannot do.
+	Socket string
 }
 
 // LoadEnvironment reads the plugin environment Herdr exports. The working directory is the fallback
@@ -34,7 +38,7 @@ func LoadEnvironment() (Environment, error) {
 	if err != nil {
 		return Environment{}, fmt.Errorf("failed to resolve working directory: %w", err)
 	}
-	env := Environment{StateDir: envOr("HERDR_PLUGIN_STATE_DIR", workingDirectory), ConfigDir: envOr("HERDR_PLUGIN_CONFIG_DIR", workingDirectory), Binary: envOr("HERDR_BIN_PATH", "herdr"), PaneID: os.Getenv("HERDR_PANE_ID")}
+	env := Environment{StateDir: envOr("HERDR_PLUGIN_STATE_DIR", workingDirectory), ConfigDir: envOr("HERDR_PLUGIN_CONFIG_DIR", workingDirectory), Binary: envOr("HERDR_BIN_PATH", "herdr"), PaneID: os.Getenv("HERDR_PANE_ID"), Socket: os.Getenv("HERDR_SOCKET_PATH")}
 	raw := os.Getenv("HERDR_PLUGIN_CONTEXT_JSON")
 	if raw != "" {
 		if err := json.Unmarshal([]byte(raw), &env.Context); err != nil {

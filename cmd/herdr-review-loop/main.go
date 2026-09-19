@@ -33,7 +33,7 @@ func main() {
 
 var errUsage = errors.New("usage error")
 
-const usage = "usage: herdr-review-loop <review [--dry-run] [--one-shot] [--profile NAME] [--scope SPEC]|show [--run ID] [--round N] [--format md|json]|config|init|stop|finish|open-panel|open-settings|open-history|panel|settings|history|version|help>"
+const usage = "usage: herdr-review-loop <review [--dry-run] [--one-shot] [--profile NAME] [--scope SPEC]|show [--run ID] [--round N] [--format md|json]|view <findings|diff>|config|init|stop|finish|open-panel|open-settings|open-history|panel|settings|history|version|help>"
 
 // application is everything a command needs after the environment has been loaded, assembled once
 // so the command table below stays a table. resolve is kept alongside the already-resolved values
@@ -51,6 +51,7 @@ type application struct {
 var commands = map[string]func(application, []string) error{
 	"review":        reviewCommand,
 	"show":          showCommand,
+	"view":          viewCommand,
 	"config":        configCommand,
 	"init":          initCommand,
 	"stop":          stopCommand,
@@ -59,6 +60,8 @@ var commands = map[string]func(application, []string) error{
 	"open-panel":    openPanelCommand,
 	"open-settings": openSettingsCommand,
 	"open-history":  openHistoryCommand,
+	"open-findings": openPaneCommand("findings"),
+	"open-diff":     openPaneCommand("diff"),
 	"panel":         panelCommand,
 	"history":       historyCommand,
 }
@@ -279,21 +282,32 @@ func openPanelCommand(app application, args []string) error {
 	if existing, live := loop.LivePanel(app.environment.StateDir, app.environment.Context.WorkspaceID); live {
 		return app.client.PluginPaneFocus(context.Background(), existing.PaneID)
 	}
-	return openPane(context.Background(), app.client, "panel", app.environment.Context.FocusedPaneID, false)
+	return openPane(context.Background(), app.client, app.environment, "panel")
+}
+
+// openPaneCommand is the action behind a pane the user opens from Herdr's own menus, as opposed to
+// from the panel. Every one of them is a popup opened focused on what it shows.
+func openPaneCommand(entrypoint string) func(application, []string) error {
+	return func(app application, args []string) error {
+		if len(args) != 0 {
+			return usageError()
+		}
+		return openPane(context.Background(), app.client, app.environment, entrypoint)
+	}
 }
 
 func openSettingsCommand(app application, args []string) error {
 	if len(args) != 0 {
 		return usageError()
 	}
-	return openPane(context.Background(), app.client, "settings", app.environment.Context.FocusedPaneID, true)
+	return openPane(context.Background(), app.client, app.environment, "settings")
 }
 
 func openHistoryCommand(app application, args []string) error {
 	if len(args) != 0 {
 		return usageError()
 	}
-	return openPane(context.Background(), app.client, "history", app.environment.Context.FocusedPaneID, true)
+	return openPane(context.Background(), app.client, app.environment, "history")
 }
 
 func panelCommand(app application, args []string) error {
@@ -310,18 +324,195 @@ func historyCommand(app application, args []string) error {
 	return history(app.environment)
 }
 
+// startReview re-invokes this same binary, detached, so the loop outlives the panel that started
+// it and closing the pane cancels nothing.
+func startReview(environment herdr.Environment, argument string) string {
+	executable, err := os.Executable()
+	if err != nil {
+		return err.Error()
+	}
+	arguments := []string{"review"}
+	if argument != "" {
+		arguments = append(arguments, argument)
+	}
+	command := exec.Command(executable, arguments...) //nolint:gosec // the executable is this process
+	command.Stdin, command.Stdout, command.Stderr = nil, nil, nil
+	command.Env = append(os.Environ(), "HERDR_REVIEW_LOOP_AUTHOR="+environment.Context.FocusedPaneID)
+	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := command.Start(); err != nil {
+		return err.Error()
+	}
+	go func() { _ = command.Wait() }()
+	if argument == "--one-shot" {
+		return "one-shot review started"
+	}
+	return "review started"
+}
+
+// answerPending carries one choice to the boundary the loop is waiting at. The request is read
+// back here rather than held by the panel, so a choice always answers what is actually waiting.
+func answerPending(environment herdr.Environment, action, text string) string {
+	repository, err := environment.Repository()
+	if err != nil {
+		return err.Error()
+	}
+	pending, waiting := loop.PendingRequest(environment.StateDir, environment.Context.WorkspaceID, repository)
+	if !waiting {
+		return "nothing is waiting for a choice"
+	}
+	if err := loop.Answer(environment.StateDir, pending, action, text); err != nil {
+		return err.Error()
+	}
+	return "sent: " + action
+}
+
+// togglePause asks the loop to stop at its next round boundary, or withdraws that request. It is
+// honored between two turns, so a pause never interrupts an agent mid-answer.
+func togglePause(environment herdr.Environment) string {
+	repository, err := environment.Repository()
+	if err != nil {
+		return err.Error()
+	}
+	paused := loop.Paused(environment.StateDir, environment.Context.WorkspaceID, repository)
+	if err := loop.SetPause(environment.StateDir, environment.Context.WorkspaceID, repository, !paused); err != nil {
+		return err.Error()
+	}
+	if paused {
+		return "pause withdrawn"
+	}
+	return "pausing at the next round boundary"
+}
+
+// describeWithStatus names an agent and what Herdr currently sees it doing, which is the one thing
+// about the pair the loop's own event stream cannot say.
+func describeWithStatus(agent herdr.Agent) string {
+	if agent.Status == "" {
+		return herdr.Describe(agent)
+	}
+	return herdr.Describe(agent) + " · " + agent.Status
+}
+
+// panelPending turns the loop's boundary into what the panel shows and which keys it offers.
+func panelPending(pending loop.Pending) (kind, phase string) {
+	switch pending.Kind {
+	case loop.PendingOneShot:
+		return ui.PendingOneShot, "one-shot review ready — choose what the author does"
+	case loop.PendingGateReview:
+		return ui.PendingGate, fmt.Sprintf("paused after the round %d review — nothing is changed yet", pending.Round)
+	case loop.PendingGateRound:
+		return ui.PendingGate, fmt.Sprintf("paused after round %d — the changes are in your tree", pending.Round)
+	default:
+		return "", ""
+	}
+}
+
 func usageError() error {
 	fmt.Fprintln(os.Stderr, usage)
 	return errUsage
 }
 
-func openPane(ctx context.Context, client herdr.Client, entrypoint, target string, popup bool) error {
+// panePlacement is where each pane belongs, named once so the panel's keys and Herdr's own action
+// menu open the same thing the same way. Findings and a diff are read rather than glanced at, so
+// they take a whole tab; settings and history are answered and dismissed, so they are popups; the
+// panel is the split beside the author, because it is the one pane nobody asked for.
+var panePlacement = map[string]string{
+	"panel":    "split",
+	"settings": "popup",
+	"history":  "popup",
+	"findings": "tab",
+	"diff":     "tab",
+}
+
+// openPane opens one of the plugin's panes. Everything the user asked for is opened focused; the
+// panel, which the loop opens on its own, is the one thing that must not take their place.
+func openPane(ctx context.Context, client herdr.Client, environment herdr.Environment, entrypoint string) error {
+	target := environment.Context.FocusedPaneID
 	args := []string{"plugin", "pane", "open", "--plugin", "herdr-review-loop", "--entrypoint", entrypoint}
-	if !popup {
+	switch panePlacement[entrypoint] {
+	case "split":
 		args = append(args, "--placement", "split", "--direction", "right", "--target-pane", target, "--no-focus", "--env", "HERDR_REVIEW_LOOP_AUTHOR="+target)
+	case "tab":
+		args = append(args, "--placement", "tab", "--focus")
+		if environment.Context.WorkspaceID != "" {
+			args = append(args, "--workspace", environment.Context.WorkspaceID)
+		}
+	default:
+		args = append(args, "--focus")
 	}
 	_, err := client.Call(ctx, args...)
 	return err
+}
+
+// viewCommand is the body of the findings and diff panes: it renders what the newest run has
+// recorded and hands it to the user's pager, which is what keeps the pane open until they leave it.
+func viewCommand(app application, args []string) error {
+	if len(args) != 1 {
+		return usageError()
+	}
+	repository, err := app.environment.Repository()
+	if err != nil {
+		return err
+	}
+	var text string
+	switch args[0] {
+	case "findings":
+		text = latestFindings(app.environment, repository)
+	case "diff":
+		text, err = latestDiff(context.Background(), app.environment, repository)
+	default:
+		return usageError()
+	}
+	if err != nil {
+		return err
+	}
+	command := pager(text)
+	if command == nil {
+		return nil
+	}
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("failed to page the output: %w", err)
+	}
+	return nil
+}
+
+// latestFindings renders the newest round this repository has archived, running or finished. The
+// archive is written as each phase completes, so a round under review is readable while it runs.
+func latestFindings(environment herdr.Environment, repository string) string {
+	record, found := loop.LatestRun(environment.StateDir, repository)
+	if !found {
+		return "no recorded runs for this repository yet.\n"
+	}
+	rounds := loop.ArchivedRounds(environment.StateDir, record.ID)
+	if len(rounds) == 0 {
+		return "the current run has not finished a review yet.\n"
+	}
+	document, ok := loop.LoadRound(environment.StateDir, record.ID, rounds[len(rounds)-1])
+	if !ok {
+		return "the newest round could not be read.\n"
+	}
+	return loop.RenderMarkdown(document)
+}
+
+// latestDiff shows what the loop has changed most recently: the last completed round when there is
+// one, and otherwise the working tree against the checkpoint the round started from.
+func latestDiff(ctx context.Context, environment herdr.Environment, repository string) (string, error) {
+	base, head, found := loop.LatestChange(ctx, environment.StateDir, repository)
+	if !found {
+		return "no checkpoint to compare against; the run recorded none.\n", nil
+	}
+	args := []string{"-C", repository, "diff", base}
+	if head != "" {
+		args = append(args, head)
+	}
+	output, err := exec.Command("git", args...).Output() //nolint:gosec // the repository and commits come from our own records
+	if err != nil {
+		return "", fmt.Errorf("failed to diff %s: %w", base, err)
+	}
+	if strings.TrimSpace(string(output)) == "" {
+		return "no changes recorded since " + base[:min(len(base), 8)] + ".\n", nil
+	}
+	return string(output), nil
 }
 func panel(environment herdr.Environment, values config.Values, client herdr.Client) error {
 	if existing, won, err := loop.ClaimPanel(environment.StateDir, environment.Context.WorkspaceID, environment.PaneID); err != nil {
@@ -330,6 +521,28 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		_ = client.PluginPaneFocus(context.Background(), existing.PaneID)
 		return nil
 	}
+	// events wake the panel the moment the loop reports a phase or the author's pane changes
+	// state, so what it shows is what is happening rather than what was happening a tick ago
+	wake := make(chan struct{}, 1)
+	nudge := make(chan struct{}, 1)
+	signalTo := func(channel chan struct{}) {
+		select {
+		case channel <- struct{}{}:
+		default:
+		}
+	}
+	watching, stopWatching := context.WithCancel(context.Background())
+	defer stopWatching()
+	go func() {
+		notices := herdr.Watch(watching, environment.Socket, []herdr.Subscription{
+			{Type: herdr.SubscriptionWorkspaceMetadata},
+			{Type: herdr.SubscriptionAgentStatus, PaneID: environment.Context.FocusedPaneID},
+		})
+		for range notices {
+			signalTo(nudge)
+			signalTo(wake)
+		}
+	}()
 	var pair struct {
 		sync.RWMutex
 		author, reviewer, message string
@@ -343,9 +556,9 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		if err != nil {
 			message = "no pair: " + err.Error()
 		} else if author, ok := herdr.Find(agents, environment.Context.FocusedPaneID); ok {
-			authorText = herdr.Describe(author)
+			authorText = describeWithStatus(author)
 			if reviewer, pickErr := herdr.PickReviewer(values, agents, author, nil); pickErr == nil {
-				reviewerText = herdr.Describe(reviewer)
+				reviewerText = describeWithStatus(reviewer)
 			} else {
 				message = "no pair: " + pickErr.Error()
 			}
@@ -363,90 +576,66 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		defer tick.Stop()
 		for {
 			refreshPair()
+			signalTo(wake)
 			select {
 			case <-done:
 				return
+			case <-nudge:
 			case <-tick.C:
 			}
 		}
 	}()
 	refresh := func() ui.PanelState {
-		held := loop.LiveRun(environment.StateDir)
-		feed := loop.LatestFeed(environment.StateDir, 200)
+		owner, live := loop.LiveRun(environment.StateDir)
+		held := live && owner == environment.Context.WorkspaceID
+		repository, repositoryErr := environment.Repository()
+		feed := loop.LatestFeed(environment.StateDir, repository, 200)
 		state := ui.PanelState{Author: environment.Context.FocusedPaneID, Phase: feed.Phase, Events: feed.Lines, Running: held}
-		if held {
-			repository, err := environment.Repository()
-			if err == nil {
-				_, state.OneShotPending = loop.PendingOneShot(environment.StateDir, environment.Context.WorkspaceID, repository)
-			}
-		}
 		if !held {
 			state.Phase = feed.Outcome
+		}
+		// one loop runs per state directory, so a panel elsewhere is not idle — it is waiting for
+		// a turn, and saying so beats offering a review that would fail on the lock
+		if live && !held {
+			state.Busy, state.Phase = true, "a review loop is running in another space"
+		}
+		// a boundary is only real while its run is: a loop killed outright leaves its request
+		// behind, and a panel offering choices nobody is waiting for is worse than one offering none
+		if repositoryErr == nil && held {
+			state.Paused = loop.Paused(environment.StateDir, environment.Context.WorkspaceID, repository)
+			if pending, waiting := loop.PendingRequest(environment.StateDir, environment.Context.WorkspaceID, repository); waiting {
+				state.Pending, state.Phase = panelPending(pending)
+				state.Summary = pending.Summary
+			}
 		}
 		pair.RLock()
 		state.Author, state.Reviewer, state.Message = pair.author, pair.reviewer, pair.message
 		pair.RUnlock()
 		return state
 	}
-	startReview := func(argument string) string {
-		executable, err := os.Executable()
-		if err != nil {
-			return err.Error()
+	open := func(entrypoint string) func() string {
+		return func() string {
+			if err := openPane(context.Background(), client, environment, entrypoint); err != nil {
+				return err.Error()
+			}
+			return "opened " + entrypoint
 		}
-		// re-invoking this same binary, detached, so the loop outlives the panel
-		arguments := []string{"review"}
-		if argument != "" {
-			arguments = append(arguments, argument)
-		}
-		command := exec.Command(executable, arguments...) //nolint:gosec // the executable is this process
-		command.Stdin = nil
-		command.Stdout = nil
-		command.Stderr = nil
-		command.Env = append(os.Environ(), "HERDR_REVIEW_LOOP_AUTHOR="+environment.Context.FocusedPaneID)
-		command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-		if err := command.Start(); err != nil {
-			return err.Error()
-		}
-		go func() { _ = command.Wait() }()
-		if argument == "--one-shot" {
-			return "one-shot review started"
-		}
-		return "review started"
 	}
-	chooseOneShot := func(action, text string) string {
-		repository, err := environment.Repository()
-		if err != nil {
-			return err.Error()
-		}
-		if err := loop.ChooseOneShot(environment.StateDir, environment.Context.WorkspaceID, repository, action, text); err != nil {
-			return err.Error()
-		}
-		return "one-shot choice sent to the author"
-	}
-	return ui.Panel(os.Stdin, os.Stdout, refresh, ui.PanelActions{
-		Review:  func() string { return startReview("") },
-		OneShot: func() string { return startReview("--one-shot") },
-		Apply:   func() string { return chooseOneShot(loop.OneShotApply, "") },
-		Cancel:  func() string { return chooseOneShot(loop.OneShotCancel, "") },
-		Custom:  func(text string) string { return chooseOneShot(loop.OneShotCustom, text) },
+	return ui.Panel(os.Stdin, os.Stdout, refresh, wake, ui.PanelActions{
+		Review:   func() string { return startReview(environment, "") },
+		OneShot:  func() string { return startReview(environment, "--one-shot") },
+		Answer:   func(action, text string) string { return answerPending(environment, action, text) },
+		Pause:    func() string { return togglePause(environment) },
+		Findings: open("findings"),
+		Diff:     open("diff"),
 		Stop: func() string {
 			if err := stopRun(client, environment); err != nil {
 				return err.Error()
 			}
 			return "review loop canceled"
 		},
-		Settings: func() string {
-			if err := openPane(context.Background(), client, "settings", environment.Context.FocusedPaneID, true); err != nil {
-				return err.Error()
-			}
-			return "opened settings"
-		},
-		History: func() string {
-			if err := openPane(context.Background(), client, "history", environment.Context.FocusedPaneID, true); err != nil {
-				return err.Error()
-			}
-			return "opened history"
-		},
+		Settings: open("settings"),
+		History:  open("history"),
 		Finish: func() (string, bool) {
 			lines, err := finishReview(environment)
 			if err != nil {
@@ -647,11 +836,14 @@ func stopRun(client herdr.Client, environment herdr.Environment) error {
 	log := loop.Log{StateDir: environment.StateDir, Output: os.Stdout}
 	if loop.StillTheHolder(record) {
 		_ = log.Write("review loop process survived cancellation")
-		_ = client.NotificationShow(context.Background(), "Review loop stopped", "review loop process survived cancellation")
+		_ = client.NotificationShow(context.Background(), "Review loop stopped", "review loop process survived cancellation", "request")
 		return fmt.Errorf("review loop process survived cancellation")
 	}
+	// a run killed outright ran none of its own cleanup, so the boundary it was waiting at is
+	// cleared here instead
+	loop.ClearControl(environment.StateDir)
 	_ = log.Write("canceled")
-	_ = client.NotificationShow(context.Background(), "Review loop canceled", "review loop canceled")
+	_ = client.NotificationShow(context.Background(), "Review loop canceled", "review loop canceled", "request")
 	fmt.Println("review loop canceled")
 	return nil
 }

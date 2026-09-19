@@ -41,7 +41,7 @@ func TestLatestFeedReadsThePhaseAndEventsOfTheNewestRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	feed := LatestFeed(state, 10)
+	feed := LatestFeed(state, "/repo", 10)
 	if feed.Phase != "round 1 fix" {
 		t.Fatalf("phase %q", feed.Phase)
 	}
@@ -55,11 +55,24 @@ func TestLatestFeedReadsThePhaseAndEventsOfTheNewestRun(t *testing.T) {
 
 func TestLatestFeedReportsTheOutcomeOfAFinishedRun(t *testing.T) {
 	state := t.TempDir()
-	if err := (Log{StateDir: state}).WriteRun(RunRecord{ID: "2026-08-09T10-00-00Z", Outcome: "clean after 2 round(s)"}); err != nil {
+	if err := (Log{StateDir: state}).WriteRun(RunRecord{ID: "2026-08-09T10-00-00Z", Repository: "/repo", Outcome: "clean after 2 round(s)"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := LatestFeed(state, 10).Outcome; got != "clean after 2 round(s)" {
+	if got := LatestFeed(state, "/repo", 10).Outcome; got != "clean after 2 round(s)" {
 		t.Fatalf("outcome %q", got)
+	}
+}
+
+// A workspace that has never been reviewed must show nothing at all. The state directory is shared
+// by every workspace the plugin runs in, so the alternative is a panel showing another space's run
+// as if it were this one's.
+func TestLatestFeedShowsNothingForARepositoryThatWasNeverReviewed(t *testing.T) {
+	state := t.TempDir()
+	if err := (Log{StateDir: state}).WriteRun(RunRecord{ID: "2026-08-09T10-00-00Z", Repository: "/elsewhere", Outcome: "clean after 2 round(s)"}); err != nil {
+		t.Fatal(err)
+	}
+	if feed := LatestFeed(state, "/repo", 10); feed.Outcome != "" || feed.Phase != "" || len(feed.Lines) != 0 {
+		t.Fatalf("another repository's run leaked into this panel: %#v", feed)
 	}
 }
 
@@ -71,7 +84,7 @@ func TestFormatEventKeepsTheTimestampAsAStrippablePrefix(t *testing.T) {
 }
 
 func TestLatestFeedIsEmptyWithoutRuns(t *testing.T) {
-	if feed := LatestFeed(t.TempDir(), 10); feed.Phase != "" || feed.Outcome != "" || len(feed.Lines) != 0 {
+	if feed := LatestFeed(t.TempDir(), "/repo", 10); feed.Phase != "" || feed.Outcome != "" || len(feed.Lines) != 0 {
 		t.Fatalf("feed %+v", feed)
 	}
 }

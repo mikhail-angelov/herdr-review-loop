@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -34,32 +35,45 @@ type KeyReader struct {
 
 var errKeyTimeout = errors.New("key read timeout")
 
-// shortcut keeps physical TUI shortcuts usable with a Russian keyboard layout.
+// keyboards maps what a non-Latin layout puts on a key to the Latin letter engraved on the same
+// physical key. A terminal delivers characters, never scancodes, so a shortcut can only stay on
+// its key by translating back: each pair below is one layout's row order against the Latin one,
+// and adding a layout is one more pair rather than one more branch per key.
+var keyboards = []struct{ produced, latin string }{
+	// Russian ЙЦУКЕН, both cases, including the punctuation keys the letters displace
+	{"йцукенгшщзхъфывапролджэячсмитьбю.ё", "qwertyuiop[]asdfghjkl;'zxcvbnm,./`"},
+	{"ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,Ё", "qwertyuiop[]asdfghjkl;'zxcvbnm,./`"},
+	// the four keys Ukrainian ЙЦУКЕН puts where Russian has ы, ъ, э and ё
+	{"іїєґІЇЄҐ", "s]'`s]'`"},
+}
+
+// latinKeys is the translation table built from keyboards, once. A map keyed by rune is what the
+// lookup needs; the strings above are what a person can check against a keyboard.
+var latinKeys = sync.OnceValue(func() map[rune]rune {
+	table := map[rune]rune{}
+	for _, keyboard := range keyboards {
+		latin := []rune(keyboard.latin)
+		for index, produced := range []rune(keyboard.produced) {
+			if index < len(latin) {
+				table[produced] = latin[index]
+			}
+		}
+	}
+	return table
+})
+
+// shortcut is the key a pane matches against: the Latin letter on the physical key that was
+// pressed, in lower case. It makes every pane's keys work in any layout and under caps lock,
+// without any pane knowing that either exists.
 func shortcut(key string) string {
-	switch key {
-	case "й", "Й":
-		return "q"
-	case "ы", "Ы":
-		return "s"
-	case "к", "К":
-		return "r"
-	case "ч", "Ч":
-		return "x"
-	case "в", "В":
-		return "d"
-	case "ф", "Ф":
-		return "a"
-	case "с", "С":
-		return "c"
-	case "а", "А":
-		return "f"
-	case "о", "О":
-		return "j"
-	case "л", "Л":
-		return "k"
-	default:
+	runes := []rune(key)
+	if len(runes) != 1 {
 		return key
 	}
+	if latin, translated := latinKeys()[runes[0]]; translated {
+		return string(latin)
+	}
+	return strings.ToLower(key)
 }
 
 // NewKeyReader reads keys from the given terminal input.

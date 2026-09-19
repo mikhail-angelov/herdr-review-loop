@@ -116,6 +116,10 @@ const (
 	EventParseFallback = "parse_fallback"
 	EventDegraded      = "degraded"
 	EventCanceled      = "canceled"
+	// EventPaused and EventResumed bracket a boundary the run stopped at for a person: the
+	// configured gate, or a pause the panel asked for. A run that waited is not a run that ran.
+	EventPaused  = "paused"
+	EventResumed = "resumed"
 	// EventFiltered names the findings min_verdict withheld from the author, so a round that came
 	// back clean because nothing cleared the bar is never confused with one nothing was found in.
 	EventFiltered = "filtered"

@@ -220,3 +220,29 @@ func writeJSON(path string, value any) error {
 	}
 	return nil
 }
+
+// LatestChange names the two ends of the newest change a run recorded for this repository: the
+// last completed round when there is one, and otherwise the working tree against the checkpoint
+// the round in progress started from. An empty head means the working tree, which is what makes
+// this readable while a round is still being applied.
+func LatestChange(ctx context.Context, stateDir, repository string) (base, head string, found bool) {
+	for _, view := range Browse(ctx, stateDir) {
+		if view.Record.Repository != repository {
+			continue
+		}
+		for index := len(view.Rounds) - 1; index >= 0; index-- {
+			round := view.Rounds[index]
+			if round.HasDiff() {
+				return round.Base, round.Commit, true
+			}
+			if round.Base != "" {
+				return round.Base, "", true
+			}
+		}
+		if baseline := view.Baseline(); baseline != "" {
+			return baseline, "", true
+		}
+		return "", "", false
+	}
+	return "", "", false
+}

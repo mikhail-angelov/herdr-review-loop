@@ -112,7 +112,7 @@ func OneShotBriefPrompt(reviewPath string) string {
 }
 
 // OneShotActionPrompt closes a clean one-shot review after the user has made a panel choice.
-func OneShotActionPrompt(choice OneShotChoice) string {
+func OneShotActionPrompt(choice Choice) string {
 	return fmt.Sprintf("The user selected %q for the completed one-shot review. %s Do not edit code unless the custom instruction explicitly asks you to. Acknowledge the selection, then stop; this one-shot review ends after this turn.", choice.Action, choice.Text)
 }
 

@@ -18,8 +18,14 @@ reviewer  →  re-reviews, narrower this time, told what is already settled
    …        until the review is clean, the round budget runs out, or an agent gets stuck
 ```
 
-One keypress starts it. A side panel shows the round and a live event stream. You go do
-something else.
+One keypress starts it. A side panel shows the round and a live event stream, and both agents'
+panes are labeled with what the loop has them doing, so a run is legible from the sidebar without
+taking your focus. You go do something else.
+
+You can take it back at any moment: `p` in the panel pauses the loop at the next round boundary,
+where nothing is running and the tree is yours. There you read the findings (`v`) and the diff
+(`d`) in their own panes, change whatever you want by hand, and then continue, run exactly one
+more round, hand the author an instruction of your own, or stop.
 
 **Nothing the loop writes lands in your working tree.** The exchange happens under
 `.review-loop/run/`, which the loop hides from git for this clone alone, so the reviewer
@@ -110,9 +116,10 @@ make prep             # fmt + vet + lint + test — run before every commit
 | `show [--run ID] [--round N] [--format md\|json]` | Renders an archived round — by default the last round of this repository's most recent run. |
 | `config` | Prints the resolved configuration with the winning layer per key, the round policy, the profiles and the pair. Runs nothing. |
 | `init` | Writes `.review-loop/` into this repository: a `config.json` holding only what you override, the profile you are using, and `config.example.md` documenting every key. Never overwrites what is already there. |
-| `stop` | Cancels the active loop from any pane. |
+| `view findings` / `view diff` | Renders the newest round's findings, or what the last round changed, into your pager. These are what the panel's `v` and `d` open, each in a tab of its own. |
+| `stop` | Cancels the active loop from any pane, interrupting whatever turn the agents were in the middle of. |
 | `finish` | Closes out a review: removes the run directory and closes the panel. |
-| `open-panel` / `open-settings` / `open-history` | Opens the corresponding pane. |
+| `open-panel` / `open-settings` / `open-history` / `open-findings` / `open-diff` | Opens the corresponding pane. |
 
 ### Exit codes
 
@@ -310,7 +317,7 @@ command = "herdr-review-loop.stop"
 description = "stop review loop"
 
 [[keys.command]]
-key = "prefix+alt+p"
+key = "prefix+p"
 type = "plugin_action"
 command = "herdr-review-loop.panel"
 description = "review loop panel"
@@ -332,12 +339,33 @@ key = "prefix+alt+h"
 type = "plugin_action"
 command = "herdr-review-loop.history"
 description = "review history"
+
+[[keys.command]]
+key = "prefix+alt+v"
+type = "plugin_action"
+command = "herdr-review-loop.findings"
+description = "review findings"
+
+[[keys.command]]
+key = "prefix+alt+d"
+type = "plugin_action"
+command = "herdr-review-loop.diff"
+description = "review diff"
 ```
 
-The panel uses `r` to start a review and `o` for a one-shot review. Once a one-shot review is
-shown by the author, the panel offers `a` to apply, `c` to cancel and `i` for a custom
-instruction; all three choices end the run after one author turn. It also uses `x` to cancel a loop, `f` to finish one, `h` for
-history, `s` for settings, and `q` to close. Settings use `j`/`k` or arrows to select,
+`prefix+p` is Herdr's own default for `previous_tab`. Taking it for the panel is worth it if you
+open the panel more often than you walk tabs backwards; if you want both, keep one of them
+somewhere else — `previous_tab = "prefix+alt+p"` under `[keys]` moves the built-in out of the way.
+
+The panel uses `r` to start a review and `o` for a one-shot review. While a loop runs it offers
+`p` to pause at the next round boundary and `x` to cancel outright. At a boundary — one you asked
+for, or one the `gate` setting produces — it offers `c` to continue, `n` to run exactly one more
+round and stop again, `i` to hand the author an instruction of your own, and `x` to stop the run
+there. Once a one-shot review is shown by the author, the same place offers `a` to apply, `c` to
+cancel and `i` for an instruction; all three end the run after one author turn. `v` and `d` open
+the newest findings and the last round's diff in a tab of their own, focused, at any time: both are
+read rather than glanced at, and a tab is the whole terminal. It also
+uses `f` to finish a review, `h` for history, `s` for settings, and `q` to close. Settings use `j`/`k` or arrows to select,
 Enter to edit, `d` to restore a default, `s` to save, `x` to cancel the loop, and `q` to
 close. History uses `j`/`k` to move, Enter to open a run and then its findings, `d` and
 `a` for diffs, `c` for a restore command, `esc` to go back, and `q` to close. `stop` is
@@ -389,6 +417,7 @@ Durations use Go notation such as `30m` or `90s`.
 | `reviewer.name` | empty | Reviewer name or pane id; overrides `reviewer.kind`. |
 | `max_iterations` | `10` | Maximum review rounds. |
 | `min_verdict` | `confirmed` | Findings the reviewer marked `plausible` are recorded but never sent to the author. `plausible` passes everything. |
+| `gate` | `never` | Where the loop stops for you on its own: `review` after each review and before the author touches the code, `round` after each round's changes, `both`, or `never`. A pause asked for from the panel is honored whatever this says. |
 | `timeouts.review` | `30m` | Budget for one review phase. |
 | `timeouts.fix` | `30m` | Budget for one author fix phase. |
 | `timeouts.stall` | `5m` | Silence from a pane that counts as a stalled agent, independent of the phase budget. |

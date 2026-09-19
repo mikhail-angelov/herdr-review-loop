@@ -33,6 +33,18 @@ contexts = ["pane", "workspace"]
 command = ["bash", "bin/run.sh", "finish"]
 
 [[actions]]
+id = "findings"
+title = "Show review findings"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/run.sh", "open-findings"]
+
+[[actions]]
+id = "diff"
+title = "Show review diff"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/run.sh", "open-diff"]
+
+[[actions]]
 id = "panel"
 title = "Open review panel"
 contexts = ["pane", "workspace"]
@@ -74,3 +86,17 @@ placement = "popup"
 width = "85%"
 height = "80%"
 command = ["bash", "bin/run-history.sh"]
+
+[[panes]]
+id = "findings"
+title = "review findings"
+description = "Read the newest round's findings and what the author decided about each."
+placement = "tab"
+command = ["bash", "bin/run-findings.sh"]
+
+[[panes]]
+id = "diff"
+title = "review diff"
+description = "Read what the last review round changed in the working tree."
+placement = "tab"
+command = ["bash", "bin/run-diff.sh"]

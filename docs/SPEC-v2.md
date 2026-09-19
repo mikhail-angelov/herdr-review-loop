@@ -708,6 +708,7 @@ round three carries a prompt large enough to undo what the session reset bought.
   "reviewer": { "kind": "", "name": "" },
   "max_iterations": 10,
   "min_verdict": "confirmed",
+  "gate": "never",
   "timeouts": { "review": "30m", "fix": "30m", "stall": "5m" },
   "retries": 1,
   "archive": { "keep": 20, "raw_output": true },
@@ -738,7 +739,30 @@ round three carries a prompt large enough to undo what the session reset bought.
 | `config` | **new** — prints resolved configuration with the winning layer per key, profiles with their paths, the chosen pair, the scope, the per-kind review commands. Runs nothing |
 | `init` | **new** — copies the winning profile down into `./.review-loop/` and writes a `config.json` holding `{}` plus the keys the user is actually overriding, not the resolved state, so the user does not silently freeze today's defaults. The explanations go next to it in `.review-loop/config.example.md` — every key, its default and what it does — because the format is strict JSON and cannot carry comments (§10) |
 | `show` | **new** — §3.5 |
-| `stop`, `finish`, `open-panel`, `open-settings`, `open-history` | unchanged, except that `finish` no longer deletes worktree files |
+| `view <findings\|diff>` | **new** — the body of the findings and diff panes: renders the newest round, or what the last round changed, into the user's pager |
+| `open-findings`, `open-diff` | **new** — open those panes, focused, each in a tab of its own |
+| `stop`, `finish`, `open-panel`, `open-settings`, `open-history` | unchanged, except that `finish` no longer deletes worktree files, and `stop` interrupts the turn each agent was in the middle of |
+
+---
+
+## 11a. Boundaries, and the files they are negotiated over
+
+A run stops at a round boundary when `gate` says so, when the panel asked for a pause, or when the
+previous boundary was answered with a single step. Both phases are between turns there: the agents
+are idle, and the working tree is the user's to read or change by hand.
+
+Two files in the plugin state directory carry it, each with exactly one writer, so a request and an
+answer can never overwrite each other:
+
+- `pending.json` — written by the run. What it is waiting for: the run, the round, the kind of
+  boundary (`one-shot`, `gate-review`, `gate-round`) and a one-line summary.
+- `control.json` — written by the panel. A `pause` flag honored at the next boundary, and a
+  `choice` naming the request it answers. An answer addressed to a request the run is no longer
+  waiting on is ignored, which is what makes a stale file harmless rather than dangerous.
+
+A third file, `settled.json`, carries the journal of rejected and deferred findings across runs for
+one repository, so a stopped run restarts without relitigating what was already argued out.
+`finish` clears it: the changes are being handed on.
 
 ---
 

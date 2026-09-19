@@ -301,10 +301,15 @@ func StillTheHolder(record LockRecord) bool {
 	return err == nil && started == record.ProcessStarted
 }
 
-// LiveRun reports whether a review loop is running right now.
-func LiveRun(stateDir string) bool {
+// LiveRun reports whether a review loop is running right now, and the workspace it belongs to.
+// The workspace is part of the answer because the lock is one per state directory while the panel
+// is one per workspace: a panel has to tell a run of its own from one it is merely in the way of.
+func LiveRun(stateDir string) (workspace string, live bool) {
 	record, err := Holder(stateDir)
-	return err == nil && StillTheHolder(record)
+	if err != nil || !StillTheHolder(record) {
+		return "", false
+	}
+	return record.Workspace, true
 }
 func processStart(pid int) (string, error) {
 	// ps is the portable way to read a process start time on both Linux and macOS; the only

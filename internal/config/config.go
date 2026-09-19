@@ -45,6 +45,7 @@ type Values struct {
 	Reviewer      Reviewer
 	MaxIterations int
 	MinVerdict    string
+	Gate          string
 	Timeouts      Timeouts
 	Retries       int
 	Archive       Archive
@@ -100,6 +101,7 @@ func Fields() []Field {
 		{"reviewer.name", "reviewer name", "agent name or pane id; wins over reviewer kind", "optional"},
 		{"max_iterations", "max iterations", "review/apply rounds before giving up", "count"},
 		{"min_verdict", "min verdict", "confirmed keeps only what the reviewer stands behind", "choice"},
+		{"gate", "gate", "stop for a choice after the review, after the round, both or never", "choice"},
 		{"timeouts.review", "review timeout", "budget for one review round", "duration"},
 		{"timeouts.fix", "fix timeout", "budget for applying a review", "duration"},
 		{"timeouts.stall", "stall timeout", "silence from a pane that counts as a stalled agent", "duration"},
@@ -297,6 +299,11 @@ func Parse(key, text string) (any, error) {
 			return nil, fmt.Errorf("expected %s or %s", VerdictConfirmed, VerdictPlausible)
 		}
 		return text, nil
+	case "gate":
+		if !slices.Contains(Gates, text) {
+			return nil, fmt.Errorf("expected one of %s", strings.Join(Gates, ", "))
+		}
+		return text, nil
 	case "reviewer.kind", "reviewer.name", "reset_command":
 		return text, nil
 	case "max_iterations":
@@ -326,6 +333,19 @@ func Parse(key, text string) (any, error) {
 const (
 	VerdictConfirmed = "confirmed"
 	VerdictPlausible = "plausible"
+)
+
+// Gates are the boundaries a run stops at for a choice, in the order they read as increasing
+// supervision. A pause asked for from the panel is honored whatever this says.
+var Gates = []string{GateNever, GateReview, GateRound, GateBoth}
+
+// The gate settings. A run stops after the review, after the round, at both boundaries, or only
+// when the panel asks it to.
+const (
+	GateNever  = "never"
+	GateReview = "review"
+	GateRound  = "round"
+	GateBoth   = "both"
 )
 
 // ScopeWorktree reviews the uncommitted changes; ScopeTextPrefix names a document to review whole.
@@ -360,6 +380,8 @@ func Apply(values *Values, key string, value any) error {
 		values.MaxIterations = value.(int)
 	case "min_verdict":
 		values.MinVerdict = value.(string)
+	case "gate":
+		values.Gate = value.(string)
 	case "timeouts.review":
 		values.Timeouts.Review = value.(time.Duration)
 	case "timeouts.fix":
@@ -399,6 +421,8 @@ func Show(key string, values Values) string {
 		return strconv.Itoa(values.MaxIterations)
 	case "min_verdict":
 		return values.MinVerdict
+	case "gate":
+		return values.Gate
 	case "timeouts.review":
 		return showDuration(values.Timeouts.Review)
 	case "timeouts.fix":
@@ -443,7 +467,7 @@ func showDuration(value time.Duration) string {
 // setJSON applies one decoded JSON value, rejecting the ones whose type cannot carry the setting.
 func setJSON(values *Values, key string, value any) error {
 	switch key {
-	case "profile", "scope", "min_verdict", "reviewer.kind", "reviewer.name", "reset_command":
+	case "profile", "scope", "min_verdict", "gate", "reviewer.kind", "reviewer.name", "reset_command":
 		if value == nil {
 			return Apply(values, key, "")
 		}

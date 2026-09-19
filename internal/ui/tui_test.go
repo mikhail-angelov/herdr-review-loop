@@ -93,8 +93,17 @@ func TestKeyReaderKeepsUTF8KeysWhole(t *testing.T) {
 	}
 }
 
-func TestShortcutSupportsRussianKeyboardLayout(t *testing.T) {
-	for key, want := range map[string]string{"й": "q", "ы": "s", "к": "r", "ч": "x", "в": "d", "ф": "a", "с": "c", "а": "f", "о": "j", "л": "k"} {
+func TestShortcutResolvesAKeyToItsLatinLetterInAnyLayout(t *testing.T) {
+	keys := map[string]string{
+		// Russian, lower and upper case, and the punctuation the layout displaces
+		"й": "q", "ы": "s", "к": "r", "ч": "x", "в": "d", "ф": "a", "с": "c", "а": "f", "о": "j", "л": "k",
+		"ц": "w", "у": "e", "н": "y", "п": "g", "и": "b", "т": "n", "Й": "q", "Ч": "x", "П": "g", "ё": "`",
+		// Ukrainian puts these four where Russian has ы, ъ, э and ё
+		"і": "s", "ї": "]", "є": "'", "ґ": "`",
+		// Latin, including caps lock, and the keys that are not letters at all
+		"q": "q", "Q": "q", "D": "d", "esc": "esc", "enter": "enter", "\r": "\r",
+	}
+	for key, want := range keys {
 		if got := shortcut(key); got != want {
 			t.Errorf("shortcut(%q) = %q, want %q", key, got, want)
 		}

@@ -18,7 +18,8 @@ type Client interface {
 	AgentClient
 	AgentList(context.Context) ([]herdr.Agent, error)
 	WorkspaceReportMetadata(context.Context, string, string, bool) error
-	NotificationShow(context.Context, string, string) error
+	NotificationShow(context.Context, string, string, string) error
+	PaneReportMetadata(context.Context, string, string, string, bool) error
 	PluginPaneOpen(context.Context, string, string) (string, error)
 	PaneLayout(context.Context, string) (herdr.PaneLayout, error)
 	PaneResize(context.Context, string, string, float64) error
@@ -30,6 +31,7 @@ const (
 	PhaseFix           = "fix"
 	PhaseBrief         = "brief"
 	PhaseOneShotAction = "one-shot-action"
+	PhasePaused        = "paused"
 )
 
 // Run is one invocation of the review loop, wired with everything it needs to execute.
@@ -53,6 +55,16 @@ type Run struct {
 }
 
 const cleanupTimeout = 2 * time.Second
+
+// releaseTimeout bounds what a canceled run spends putting the agents back the way it found them.
+// It is longer than cleanupTimeout because it covers two agents and two calls each.
+const releaseTimeout = 5 * time.Second
+
+// The Herdr notification sounds, named once so a run's outcome and its sound cannot disagree.
+const (
+	soundDone    = "done"
+	soundRequest = "request"
+)
 
 const defaultOutputWait = 15 * time.Second
 
@@ -113,13 +125,18 @@ func (r Run) Execute(ctx context.Context, dryRun bool) error {
 // session is the mutable state of one run: what has been settled, what has been raised, and how it
 // ended. Keeping it in one place is what lets every exit path write the same report.
 type session struct {
-	scope    Scope
-	record   RunRecord
-	archive  *Archive
-	journal  Journal
-	disputes Disputes
-	report   Report
-	notified string
+	scope Scope
+	// stepPause is set by a single step through the next boundary, and instruction carries what
+	// the user typed at one, to be spent on the next author turn. Both are one-shot by design:
+	// a choice made at one boundary must not silently govern every boundary after it.
+	stepPause   bool
+	instruction string
+	record      RunRecord
+	archive     *Archive
+	journal     Journal
+	disputes    Disputes
+	report      Report
+	notified    string
 }
 
 // execute is the run proper, once the lock is held and the run directory exists.
@@ -143,6 +160,12 @@ func (r Run) execute(ctx context.Context, author, reviewer herdr.Agent, reposito
 	}
 	state.archive = archive
 	state.report.Run = state.record.ID
+	// what earlier runs against this tree already argued out, so a run that was stopped and
+	// started again resumes the conversation rather than reopening it
+	if settled := LoadSettled(r.Environment.StateDir, repository); len(settled) > 0 {
+		state.journal.Restore(settled)
+		_ = r.Log.Write(fmt.Sprintf("carrying %d settled point(s) forward from earlier runs", len(settled)))
+	}
 	if err := r.Log.WriteRun(state.record); err != nil {
 		return Exit(ExitTool, err)
 	}
@@ -150,7 +173,8 @@ func (r Run) execute(ctx context.Context, author, reviewer herdr.Agent, reposito
 	if err := archive.WriteManifest(r.manifest(ctx, state, author, reviewer, checkpoints)); err != nil {
 		return Exit(ExitTool, err)
 	}
-	defer r.close(state, author.WorkspaceID)
+	defer r.close(state, author, reviewer)
+	defer r.release(ctx, author, reviewer)
 	r.ensurePanel(ctx, author)
 	if r.OneShot {
 		return r.oneShot(ctx, state, author, reviewer, runDir, checkpoints)
@@ -189,8 +213,17 @@ func (r Run) rounds(ctx context.Context, state *session, author, reviewer herdr.
 			r.record(state, round, review, Decisions{}, ActionUnreviewed, "the round budget was spent")
 			break
 		}
+		choice, err := r.gate(ctx, state, author, PendingGateReview, PhaseReview, round, ReviewSummary(review))
+		if err != nil {
+			r.record(state, round, review, Decisions{}, ActionUnreviewed, "the run ended while paused")
+			return r.fail(state, r.classify(state, round, PhaseReview, err))
+		}
+		if choice.Action == ChoiceStop {
+			r.record(state, round, review, Decisions{}, ActionUnreviewed, "the user stopped the run before the findings were applied")
+			return r.fail(state, Exitf(ExitCanceled, "stopped by the user after the round %d review", round))
+		}
 		r.reportProgress(ctx, author.WorkspaceID, PhaseFix, round)
-		decisions, err := r.fixPhase(ctx, state, author, runDir.Round(round), policy, review, checkpoints)
+		decisions, err := r.fixPhaseWithInstruction(ctx, state, author, runDir.Round(round), policy, review, checkpoints, state.takeInstruction())
 		if err != nil {
 			r.record(state, round, review, Decisions{}, ActionUnreviewed, "the author phase failed")
 			return r.fail(state, err)
@@ -198,10 +231,20 @@ func (r Run) rounds(ctx context.Context, state *session, author, reviewer herdr.
 		r.record(state, round, review, decisions, "", "")
 		state.journal.Record(round, review, decisions)
 		state.disputes.Record(round, review, decisions)
+		if saveErr := SaveSettled(r.Environment.StateDir, state.record.Repository, state.journal.Entries()); saveErr != nil {
+			_ = r.Log.Write("could not carry this round's settled points forward: " + saveErr.Error())
+		}
 		checkpoints.SaveQuietly(ctx, round)
 		if disputed, stuck := state.disputes.Stuck(); stuck {
 			_ = state.archive.Event(round, PhaseFix, EventDegraded, "stuck: "+disputed)
 			return r.fail(state, Exitf(ExitFindings, "stuck after %d round(s): the author keeps applying a fix the reviewer keeps raising — %s", round, disputed))
+		}
+		choice, err = r.gate(ctx, state, author, PendingGateRound, PhaseFix, round, decisionSummary(decisions))
+		if err != nil {
+			return r.fail(state, r.classify(state, round, PhaseFix, err))
+		}
+		if choice.Action == ChoiceStop {
+			return r.fail(state, Exitf(ExitCanceled, "stopped by the user after round %d", round))
 		}
 	}
 	return r.fail(state, Exitf(ExitFindings, "stopped after %d round(s) with findings still open", state.record.Rounds))
@@ -258,13 +301,18 @@ func (r Run) oneShot(ctx context.Context, state *session, author, reviewer herdr
 		r.record(state, round, review, Decisions{}, ActionUnreviewed, "the author could not present the review")
 		return r.fail(state, briefErr)
 	}
-	pending := OneShotPending{Workspace: author.WorkspaceID, Repository: state.record.Repository, Run: state.record.ID, Round: round}
-	if pendingErr := CreateOneShotPending(r.Environment.StateDir, pending); pendingErr != nil {
+	pending := Pending{
+		ID: requestID(state.record.ID, round, PendingOneShot), Workspace: author.WorkspaceID,
+		Repository: state.record.Repository, Run: state.record.ID, Round: round,
+		Kind: PendingOneShot, Summary: ReviewSummary(review),
+	}
+	if pendingErr := publishPending(r.Environment.StateDir, pending); pendingErr != nil {
 		return r.fail(state, Exit(ExitTool, pendingErr))
 	}
-	defer clearOneShot(r.Environment.StateDir)
+	defer clearPending(r.Environment.StateDir)
 	_ = state.archive.Event(round, PhaseBrief, EventPhaseDone, "awaiting panel choice")
-	choice, err := waitOneShotChoice(ctx, r.Environment.StateDir, author.WorkspaceID, state.record.Repository)
+	r.notify(ctx, "Review loop needs you", "one-shot review ready: "+pending.Summary, soundRequest)
+	choice, err := awaitChoice(ctx, r.Environment.StateDir, pending)
 	if err != nil {
 		r.record(state, round, review, Decisions{}, ActionUnreviewed, "no panel choice was made")
 		return r.fail(state, r.classify(state, round, PhaseBrief, err))
@@ -303,7 +351,7 @@ func (r Run) oneShotBrief(ctx context.Context, state *session, author herdr.Agen
 	return r.submit(phase, state, author, prompt, number, PhaseBrief)
 }
 
-func (r Run) oneShotAction(ctx context.Context, state *session, author herdr.Agent, number int, choice OneShotChoice) error {
+func (r Run) oneShotAction(ctx context.Context, state *session, author herdr.Agent, number int, choice Choice) error {
 	phase, cancel := context.WithTimeout(ctx, r.Config.Timeouts.Fix)
 	defer cancel()
 	if err := r.prepareAgent(phase, author); err != nil {
@@ -316,11 +364,11 @@ func (r Run) oneShotAction(ctx context.Context, state *session, author herdr.Age
 	return r.submit(phase, state, author, prompt, number, PhaseOneShotAction)
 }
 
-func oneShotInstruction(choice OneShotChoice) string {
+func oneShotInstruction(choice Choice) string {
 	switch choice.Action {
-	case OneShotApply:
+	case ChoiceApply:
 		return "The user chose Apply. Apply the findings you agree with, then record a decision for every id."
-	case OneShotCancel:
+	case ChoiceCancel:
 		return "The user chose Cancel. Do not edit code. Record every finding as deferred with a note that the user canceled this one-shot review."
 	default:
 		return "The user supplied this instruction:\n" + choice.Text
@@ -360,9 +408,7 @@ func (r Run) reviewPhase(ctx context.Context, state *session, reviewer herdr.Age
 // wrote it — no timestamp comparison is involved.
 func (r Run) reviewAttempt(ctx context.Context, state *session, reviewer herdr.Agent, round *Round, policy RoundPolicy, attempt int) (Review, error) {
 	number := policy.Number
-	if err := r.Client.AgentFocus(ctx, herdr.Target(reviewer)); err != nil {
-		return Review{}, err
-	}
+	r.label(ctx, reviewer, "reviewer", fmt.Sprintf("review %d/%d", number, r.Config.MaxIterations))
 	phase, cancel := context.WithTimeout(ctx, r.Config.Timeouts.Review)
 	defer cancel()
 	if err := r.prepareAgent(phase, reviewer); err != nil {
@@ -516,11 +562,8 @@ func (r Run) recordNotes(state *session, number int, phase string, notes []strin
 
 // fixPhase has the author act on the findings and decide every one of them, with the same ladder
 // the reviewer's output goes through. An exhausted budget stops the run, because the next round
-// would review unchanged code.
-func (r Run) fixPhase(ctx context.Context, state *session, author herdr.Agent, round *Round, policy RoundPolicy, review Review, checkpoints Checkpoints) (Decisions, error) {
-	return r.fixPhaseWithInstruction(ctx, state, author, round, policy, review, checkpoints, "")
-}
-
+// would review unchanged code. The instruction is what the user typed at a gate, empty when they
+// typed nothing, and it is spent on this one turn.
 func (r Run) fixPhaseWithInstruction(ctx context.Context, state *session, author herdr.Agent, round *Round, policy RoundPolicy, review Review, checkpoints Checkpoints, instruction string) (Decisions, error) {
 	number := policy.Number
 	_ = state.archive.Event(number, PhaseFix, EventPhaseStart, "")
@@ -555,9 +598,7 @@ func (r Run) fixPhaseWithInstruction(ctx context.Context, state *session, author
 // — the review phase made it — so what has to be absent here is decisions.json, not the directory.
 func (r Run) fixAttempt(ctx context.Context, state *session, author herdr.Agent, round *Round, policy RoundPolicy, attempt int, review Review, instruction string) (Decisions, error) {
 	number := policy.Number
-	if err := r.Client.AgentFocus(ctx, herdr.Target(author)); err != nil {
-		return Decisions{}, err
-	}
+	r.label(ctx, author, "author", fmt.Sprintf("apply %d/%d", number, r.Config.MaxIterations))
 	phase, cancel := context.WithTimeout(ctx, r.Config.Timeouts.Fix)
 	defer cancel()
 	if err := r.prepareAgent(phase, author); err != nil {
@@ -794,7 +835,8 @@ func (r Run) fail(state *session, err error) error {
 // close publishes the run record and the report, clears the progress token and notifies. It runs
 // on every exit path, which is what makes the report the complete account of a run rather than the
 // account of the runs that went well.
-func (r Run) close(state *session, workspace string) {
+func (r Run) close(state *session, author, reviewer herdr.Agent) {
+	ClearControl(r.Environment.StateDir)
 	if err := r.Log.WriteRun(state.record); err != nil {
 		_ = r.Log.Write("run record update failed: " + err.Error())
 	}
@@ -802,7 +844,10 @@ func (r Run) close(state *session, workspace string) {
 		_ = r.Log.Write("report failed: " + err.Error())
 	}
 	cleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
-	_ = r.Client.WorkspaceReportMetadata(cleanup, workspace, "", true)
+	_ = r.Client.WorkspaceReportMetadata(cleanup, author.WorkspaceID, "", true)
+	for _, agent := range []herdr.Agent{author, reviewer} {
+		_ = r.Client.PaneReportMetadata(cleanup, agent.PaneID, "", "", true)
+	}
 	cancel()
 	if state.notified == "" {
 		return
@@ -811,9 +856,11 @@ func (r Run) close(state *session, workspace string) {
 	if state.report.ExitCode == ExitClean {
 		title = "Review loop clean"
 	}
-	notify, cancelNotify := context.WithTimeout(context.Background(), cleanupTimeout)
-	defer cancelNotify()
-	_ = r.Client.NotificationShow(notify, title, state.notified)
+	sound := soundDone
+	if state.report.ExitCode != ExitClean {
+		sound = soundRequest
+	}
+	r.notify(context.Background(), title, state.notified, sound)
 }
 
 // manifest records the resolved configuration with provenance, so a month-old run can be explained
@@ -982,6 +1029,50 @@ func (r Run) reportProgress(ctx context.Context, workspace, phase string, round 
 }
 
 func (r Run) note(message string) { _ = r.Log.Write(message) }
+
+// label publishes what the loop currently has an agent doing, where Herdr shows it beside the
+// pane. It replaces focusing the pane on every attempt: the sidebar says the same thing for both
+// agents at once, and says it without moving the user's cursor out of what they were reading.
+func (r Run) label(ctx context.Context, agent herdr.Agent, role, phase string) {
+	if err := r.Client.PaneReportMetadata(ctx, agent.PaneID, role, phase, false); err != nil {
+		_ = r.Log.Write("pane label failed: " + err.Error())
+	}
+}
+
+// notify raises a desktop notification on its own context, so it still reaches the user when what
+// prompted it was the run being canceled.
+func (r Run) notify(ctx context.Context, title, body, sound string) {
+	if ctx.Err() != nil {
+		ctx = context.Background()
+	}
+	notify, cancel := context.WithTimeout(ctx, cleanupTimeout)
+	defer cancel()
+	if err := r.Client.NotificationShow(notify, title, body, sound); err != nil {
+		_ = r.Log.Write("notification failed: " + err.Error())
+	}
+}
+
+// release interrupts whatever the agents were doing when a canceled run walked away from them. An
+// agent left mid-turn keeps working and writes its file into a round directory the next run has
+// already reused, so the run that abandoned it is the one that has to stop it.
+func (r Run) release(ctx context.Context, agents ...herdr.Agent) {
+	if ctx.Err() == nil {
+		return
+	}
+	cleanup, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+	defer cancel()
+	for _, agent := range agents {
+		current, err := r.Client.AgentGet(cleanup, herdr.Target(agent))
+		if err == nil && current.Status != "working" {
+			continue
+		}
+		if err := r.Client.AgentSendKeys(cleanup, herdr.Target(agent), "esc"); err != nil {
+			_ = r.Log.Write("could not interrupt " + herdr.Describe(agent) + ": " + err.Error())
+			continue
+		}
+		_ = r.Log.Write("interrupted " + herdr.Describe(agent))
+	}
+}
 
 func questionSummary(questions []OpenQuestion) string {
 	texts := make([]string, 0, len(questions))

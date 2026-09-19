@@ -18,7 +18,9 @@ reviewer  →  re-reviews, narrower this time, told what is already settled
    …        until the review is clean, the round budget runs out, or an agent gets stuck
 ```
 
-One keypress starts it. A side panel shows the round and a live event stream, and both agents'
+One keypress starts it. The panel says what would be reviewed — the scope, and how many files and
+lines that covers — before you start, because a scope set to the wrong thing cannot be told from a
+clean review afterwards. A side panel shows the round and a live event stream, and both agents'
 panes are labeled with what the loop has them doing, so a run is legible from the sidebar without
 taking your focus. You go do something else.
 
@@ -116,10 +118,10 @@ make prep             # fmt + vet + lint + test — run before every commit
 | `show [--run ID] [--round N] [--format md\|json]` | Renders an archived round — by default the last round of this repository's most recent run. |
 | `config` | Prints the resolved configuration with the winning layer per key, the round policy, the profiles and the pair. Runs nothing. |
 | `init` | Writes `.review-loop/` into this repository: a `config.json` holding only what you override, the profile you are using, and `config.example.md` documenting every key. Never overwrites what is already there. |
-| `view findings` / `view diff` | Renders the newest round's findings, or what the last round changed, into your pager. These are what the panel's `v` and `d` open, each in a tab of its own. |
+| `view findings` / `view diff` / `view log` | Renders the newest round's findings, what the last round changed, or the run's whole event stream and journal, into your pager. These are what the panel's `v`, `d` and `l` open, each in a tab of its own. |
 | `stop` | Cancels the active loop from any pane, interrupting whatever turn the agents were in the middle of. |
 | `finish` | Closes out a review: removes the run directory and closes the panel. |
-| `open-panel` / `open-settings` / `open-history` / `open-findings` / `open-diff` | Opens the corresponding pane. |
+| `open-panel` / `open-settings` / `open-history` / `open-findings` / `open-diff` / `open-log` | Opens the corresponding pane. |
 
 ### Exit codes
 
@@ -351,6 +353,12 @@ key = "prefix+alt+d"
 type = "plugin_action"
 command = "herdr-review-loop.diff"
 description = "review diff"
+
+[[keys.command]]
+key = "prefix+alt+l"
+type = "plugin_action"
+command = "herdr-review-loop.log"
+description = "review log"
 ```
 
 `prefix+p` is Herdr's own default for `previous_tab`. Taking it for the panel is worth it if you
@@ -362,9 +370,11 @@ The panel uses `r` to start a review and `o` for a one-shot review. While a loop
 for, or one the `gate` setting produces — it offers `c` to continue, `n` to run exactly one more
 round and stop again, `i` to hand the author an instruction of your own, and `x` to stop the run
 there. Once a one-shot review is shown by the author, the same place offers `a` to apply, `c` to
-cancel and `i` for an instruction; all three end the run after one author turn. `v` and `d` open
-the newest findings and the last round's diff in a tab of their own, focused, at any time: both are
-read rather than glanced at, and a tab is the whole terminal. It also
+cancel and `i` for an instruction; all three end the run after one author turn. `v`, `d` and `l` open
+the newest findings, the last round's diff and the run's whole event stream in a tab of their own,
+focused, at any time: all three are read rather than glanced at, and a tab is the whole terminal.
+The panel's own feed keeps one line per event and clips it; `l` is the same material at full width,
+where a pager can scroll and search it. It also
 uses `f` to finish a review, `h` for history, `s` for settings, and `q` to close. Settings use `j`/`k` or arrows to select,
 Enter to edit, `d` to restore a default, `s` to save, `x` to cancel the loop, and `q` to
 close. History uses `j`/`k` to move, Enter to open a run and then its findings, `d` and

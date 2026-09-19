@@ -71,7 +71,7 @@ func TestSettingsViewShowsRunStatusAndDimsDefaults(t *testing.T) {
 	values := config.Defaults()
 	values.MaxIterations = 2
 	pane := &settingsPane{directory: "/tmp/config", fields: config.Fields(), values: values, message: "message"}
-	view := pane.view("review loop running (pid 42, since 12:34)", 100)
+	view := pane.view("review loop running (pid 42, since 12:34)", 100, 40)
 	if !strings.Contains(view, "review loop running (pid 42, since 12:34)") {
 		t.Fatalf("missing run status: %q", view)
 	}
@@ -82,7 +82,7 @@ func TestSettingsViewShowsRunStatusAndDimsDefaults(t *testing.T) {
 		t.Fatalf("non-default value is dimmed: %q", view)
 	}
 	pane.message, pane.editing, pane.input = "enter accept", true, "claude"
-	editing := pane.view("", 100)
+	editing := pane.view("", 100, 40)
 	if !strings.Contains(editing, "reviewer kind") || !strings.Contains(editing, "claude") {
 		t.Fatalf("missing edit state: %q", editing)
 	}
@@ -90,7 +90,7 @@ func TestSettingsViewShowsRunStatusAndDimsDefaults(t *testing.T) {
 
 func TestSettingsViewMatchesNodePopupLayout(t *testing.T) {
 	pane := &settingsPane{directory: "/tmp/config", fields: config.Fields(), values: config.Defaults(), message: "saved"}
-	view := pane.view("", 80)
+	view := pane.view("", 80, 40)
 	if !strings.HasPrefix(view, "\n  ") {
 		t.Fatalf("settings should begin with the Node popup's padded header: %q", view)
 	}
@@ -102,7 +102,7 @@ func TestSettingsViewMatchesNodePopupLayout(t *testing.T) {
 func TestSettingsViewDoesNotRepeatKeyHelpInMessage(t *testing.T) {
 	keys := "j/k move · enter edit · d default · s save · x cancel run · q close"
 	pane := &settingsPane{directory: "/tmp/config", fields: config.Fields(), values: config.Defaults(), message: keys}
-	view := pane.view("", 80)
+	view := pane.view("", 80, 40)
 	if got := strings.Count(view, keys); got != 1 {
 		t.Fatalf("key help appears %d times, want once: %q", got, view)
 	}

@@ -33,7 +33,7 @@ func main() {
 
 var errUsage = errors.New("usage error")
 
-const usage = "usage: herdr-review-loop <review [--dry-run] [--one-shot] [--profile NAME] [--scope SPEC]|show [--run ID] [--round N] [--format md|json]|view <findings|diff>|config|init|stop|finish|open-panel|open-settings|open-history|panel|settings|history|version|help>"
+const usage = "usage: herdr-review-loop <review [--dry-run] [--one-shot] [--profile NAME] [--scope SPEC]|show [--run ID] [--round N] [--format md|json]|view <findings|diff|log>|config|init|stop|finish|open-panel|open-settings|open-history|open-findings|open-diff|open-log|panel|settings|history|version|help>"
 
 // application is everything a command needs after the environment has been loaded, assembled once
 // so the command table below stays a table. resolve is kept alongside the already-resolved values
@@ -62,6 +62,7 @@ var commands = map[string]func(application, []string) error{
 	"open-history":  openHistoryCommand,
 	"open-findings": openPaneCommand("findings"),
 	"open-diff":     openPaneCommand("diff"),
+	"open-log":      openPaneCommand("log"),
 	"panel":         panelCommand,
 	"history":       historyCommand,
 }
@@ -314,7 +315,7 @@ func panelCommand(app application, args []string) error {
 	if len(args) != 0 {
 		return usageError()
 	}
-	return panel(app.environment, app.values, app.client)
+	return panel(app.environment, app.client, app.resolve)
 }
 
 func historyCommand(app application, args []string) error {
@@ -421,6 +422,7 @@ var panePlacement = map[string]string{
 	"history":  "popup",
 	"findings": "tab",
 	"diff":     "tab",
+	"log":      "tab",
 }
 
 // openPane opens one of the plugin's panes. Everything the user asked for is opened focused; the
@@ -459,6 +461,8 @@ func viewCommand(app application, args []string) error {
 		text = latestFindings(app.environment, repository)
 	case "diff":
 		text, err = latestDiff(context.Background(), app.environment, repository)
+	case "log":
+		text = loop.LogDocument(app.environment.StateDir, repository)
 	default:
 		return usageError()
 	}
@@ -514,7 +518,11 @@ func latestDiff(ctx context.Context, environment herdr.Environment, repository s
 	}
 	return string(output), nil
 }
-func panel(environment herdr.Environment, values config.Values, client herdr.Client) error {
+
+// panel re-resolves the configuration on every refresh rather than holding the values it started
+// with: the settings pane writes that file while the panel is open, and a panel showing the scope
+// of a run nobody would start any more is worse than one showing no scope at all.
+func panel(environment herdr.Environment, client herdr.Client, resolve func(map[string]any) config.Resolution) error {
 	if existing, won, err := loop.ClaimPanel(environment.StateDir, environment.Context.WorkspaceID, environment.PaneID); err != nil {
 		return err
 	} else if !won {
@@ -546,11 +554,17 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 	var pair struct {
 		sync.RWMutex
 		author, reviewer, message string
+		scope, changes            string
 	}
 	pair.author = environment.Context.FocusedPaneID
 	refreshPair := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		values := resolve(nil).Values
+		scopeText, changesText := "", ""
+		if repository, err := environment.Repository(); err == nil {
+			scopeText, changesText = loop.PanelScope(ctx, repository, values.Scope)
+		}
 		authorText, reviewerText, message := environment.Context.FocusedPaneID, "", ""
 		agents, err := client.AgentList(ctx)
 		if err != nil {
@@ -567,6 +581,7 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		}
 		pair.Lock()
 		pair.author, pair.reviewer, pair.message = authorText, reviewerText, message
+		pair.scope, pair.changes = scopeText, changesText
 		pair.Unlock()
 	}
 	done := make(chan struct{})
@@ -610,6 +625,7 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		}
 		pair.RLock()
 		state.Author, state.Reviewer, state.Message = pair.author, pair.reviewer, pair.message
+		state.Scope, state.Changes = pair.scope, pair.changes
 		pair.RUnlock()
 		return state
 	}
@@ -628,6 +644,7 @@ func panel(environment herdr.Environment, values config.Values, client herdr.Cli
 		Pause:    func() string { return togglePause(environment) },
 		Findings: open("findings"),
 		Diff:     open("diff"),
+		Log:      open("log"),
 		Stop: func() string {
 			if err := stopRun(client, environment); err != nil {
 				return err.Error()

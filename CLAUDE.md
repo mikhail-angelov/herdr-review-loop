@@ -81,7 +81,11 @@ go test -run TestName ./internal/loop/
     Expect this table to rot when an agent CLI moves; `review_command` overrides any kind, and
     `parse_fallback` events are the trail.
   - `archive.go` / `render.go` — the per-run archive and the single renderer `show` and the history
-    pane both call.
+    pane both call. `log.go`'s `LogDocument` is the panel's feed at full width, for the pager: the
+    panel clips every event to one line of a narrow pane, and the detail is usually the point.
+  - `scope.go`'s `PanelScope` is what the panel shows before a run: the scope, resolved far enough
+    to name what it compares against, and a diffstat. It is best-effort and never fails — a scope
+    that cannot be resolved says so where it would have been shown.
   - `run.go`'s `label` publishes each agent's phase as pane metadata instead of focusing its pane.
     A run that stole focus on every attempt moved the user's cursor a dozen times; the sidebar says
     the same thing for both agents at once. Focus is taken only when an agent is blocked.

@@ -45,6 +45,12 @@ contexts = ["pane", "workspace"]
 command = ["bash", "bin/run.sh", "open-diff"]
 
 [[actions]]
+id = "log"
+title = "Show review log"
+contexts = ["pane", "workspace"]
+command = ["bash", "bin/run.sh", "open-log"]
+
+[[actions]]
 id = "panel"
 title = "Open review panel"
 contexts = ["pane", "workspace"]
@@ -93,6 +99,13 @@ title = "review findings"
 description = "Read the newest round's findings and what the author decided about each."
 placement = "tab"
 command = ["bash", "bin/run-findings.sh"]
+
+[[panes]]
+id = "log"
+title = "review log"
+description = "Read the run's whole event stream and journal, nothing clipped."
+placement = "tab"
+command = ["bash", "bin/run-log.sh"]
 
 [[panes]]
 id = "diff"

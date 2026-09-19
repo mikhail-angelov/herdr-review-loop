@@ -77,3 +77,33 @@ func TestBranchScopeRefusesABaseItCannotTellFromTheBranchItself(t *testing.T) {
 		t.Fatal("a base that does not exist was accepted")
 	}
 }
+
+func TestPanelScopeNamesWhatWouldBeReviewedAndHowMuchOfIt(t *testing.T) {
+	repository := newRepository(t)
+	base := strings.TrimSpace(run(t, repository, "rev-parse", "HEAD"))
+	run(t, repository, "checkout", "-b", "feature")
+	writeRepoFile(t, repository, "tracked.txt", "two\nthree\n")
+	run(t, repository, "commit", "-am", "on the branch")
+	writeRepoFile(t, repository, "untracked.txt", "new\n")
+
+	worktreeScope, worktreeChanges := PanelScope(t.Context(), repository, "worktree")
+	if worktreeScope != "uncommitted changes" || !strings.Contains(worktreeChanges, "1 new") {
+		t.Fatalf("worktree: %q / %q", worktreeScope, worktreeChanges)
+	}
+	if strings.Contains(worktreeChanges, "files") {
+		t.Fatalf("the committed change leaked into the worktree summary: %q", worktreeChanges)
+	}
+
+	branchScope, branchChanges := PanelScope(t.Context(), repository, "branch")
+	if !strings.Contains(branchScope, "branch vs main") || !strings.Contains(branchScope, base[:12]) {
+		t.Fatalf("branch: %q", branchScope)
+	}
+	if !strings.Contains(branchChanges, "1 files") || !strings.Contains(branchChanges, "+2") || !strings.Contains(branchChanges, "1 new") {
+		t.Fatalf("branch changes: %q", branchChanges)
+	}
+
+	broken, changes := PanelScope(t.Context(), repository, "staged")
+	if !strings.HasPrefix(broken, "staged — ") || changes != "" {
+		t.Fatalf("a scope nobody can resolve must say so: %q / %q", broken, changes)
+	}
+}

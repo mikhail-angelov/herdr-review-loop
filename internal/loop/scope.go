@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mikhail-angelov/herdr-review-loop/internal/config"
@@ -186,4 +187,92 @@ func (s Scope) Author() string {
 		return "Apply your changes to the working tree."
 	}
 	return "Apply your changes to " + s.Absolute + " and to nothing else; that document is the whole of what is under review."
+}
+
+// shortstat reads `git diff --shortstat`, which is the cheapest question git answers about how
+// much a scope covers.
+var shortstat = regexp.MustCompile(`(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?`)
+
+// PanelScope is what the panel says a run would review: the scope as configured, resolved far
+// enough to name what it compares against, and how much has changed since that point. It answers
+// the question a panel exists to raise — is this the change I meant to review — before a run is
+// started rather than after it comes back having reviewed the wrong half.
+//
+// It is best-effort and never fails: a scope that cannot be resolved says so in the line it would
+// have used, because a panel that hides a broken setting is worse than one that names it.
+func PanelScope(ctx context.Context, repository, spec string) (scope, changes string) {
+	parsed, err := ParseScope(spec)
+	switch {
+	case err != nil:
+		return spec + " — " + err.Error(), ""
+	case parsed.Text():
+		return "document " + parsed.Document, ""
+	case parsed.Branch():
+		resolved, resolveErr := parsed.Resolve(ctx, nil, repository)
+		if resolveErr != nil {
+			return parsed.Spec + " — " + resolveErr.Error(), ""
+		}
+		return fmt.Sprintf("branch vs %s at %s", resolved.BaseRef, shortCommit(resolved.Base)), changeSummary(ctx, repository, resolved.start())
+	default:
+		return "uncommitted changes", changeSummary(ctx, repository, "HEAD")
+	}
+}
+
+// changeSummary is how much the scope covers, in the shape a narrow panel can hold. Untracked
+// files are counted separately because git's own diff does not see them at all, and a new file is
+// the most common thing under review.
+func changeSummary(ctx context.Context, repository, start string) string {
+	parts := make([]string, 0, 3)
+	stat, err := git(ctx, repository, nil, "diff", "--shortstat", start)
+	if err != nil {
+		return ""
+	}
+	if match := shortstat.FindStringSubmatch(stat); match != nil {
+		parts = append(parts, match[1]+" files")
+		if lines := changedLines(match[2], match[3]); lines != "" {
+			parts = append(parts, lines)
+		}
+	}
+	if untracked := untrackedCount(ctx, repository); untracked > 0 {
+		parts = append(parts, fmt.Sprintf("%d new", untracked))
+	}
+	if len(parts) == 0 {
+		return "nothing changed yet"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func changedLines(insertions, deletions string) string {
+	parts := make([]string, 0, 2)
+	if insertions != "" {
+		parts = append(parts, "+"+insertions)
+	}
+	if deletions != "" {
+		parts = append(parts, "−"+deletions)
+	}
+	return strings.Join(parts, " ")
+}
+
+// untrackedCount counts the files git is not tracking yet. The run directory is excluded through
+// info/exclude, so a run's own files are never among them.
+func untrackedCount(ctx context.Context, repository string) int {
+	status, err := git(ctx, repository, nil, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(status, "\n") {
+		if strings.HasPrefix(line, "??") {
+			count++
+		}
+	}
+	return count
+}
+
+// shortCommit is a commit id at the length a person reads rather than the length git stores.
+func shortCommit(commit string) string {
+	if len(commit) > 12 {
+		return commit[:12]
+	}
+	return commit
 }

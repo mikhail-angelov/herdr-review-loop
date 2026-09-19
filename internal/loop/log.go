@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -104,4 +105,39 @@ func FormatEvent(event Event) string {
 		line += " — " + event.Detail
 	}
 	return line
+}
+
+// LogDocument is the panel's feed at full width: the newest run for a repository, every event it
+// recorded with nothing clipped, and the journal underneath it. The panel has one line per event
+// and a pane thirty columns wide, so anything with a detail worth reading is cut off there; this is
+// the same material for a pager, where it can be scrolled and searched.
+func LogDocument(stateDir, repository string) string {
+	record, found := LatestRun(stateDir, repository)
+	if !found {
+		return "no recorded runs for this repository yet.\n"
+	}
+	var page strings.Builder
+	fmt.Fprintf(&page, "run %s · %s\n", record.Started.Local().Format("2006-01-02 15:04"), record.Repository)
+	if record.Author != "" {
+		fmt.Fprintf(&page, "%s ← %s\n", record.Author, record.Reviewer)
+	}
+	fmt.Fprintf(&page, "%d round(s) · %s\n\nevents\n", record.Rounds, record.Outcome)
+	events := ReadEvents(ArchiveDir(stateDir, record.ID))
+	if len(events) == 0 {
+		page.WriteString("  none recorded yet\n")
+	}
+	for _, event := range events {
+		page.WriteString("  " + FormatEvent(event) + "\n")
+	}
+	// the journal is one file for the whole state directory, so it is labeled rather than filtered:
+	// the lines that are not this run's are still the ones that explain a run that never started
+	tail, err := (Log{StateDir: stateDir}).Tail()
+	if err != nil || strings.TrimSpace(tail) == "" {
+		return page.String()
+	}
+	page.WriteString("\njournal — every workspace, newest last\n")
+	for _, line := range strings.Split(strings.TrimRight(tail, "\n"), "\n") {
+		page.WriteString("  " + line + "\n")
+	}
+	return page.String()
 }

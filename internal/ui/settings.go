@@ -23,14 +23,18 @@ func DumpSettings(out *os.File, directory string, values config.Values) {
 // settingsPane is the editor's state. It is a struct rather than a pile of locals so the two key
 // handlers below can be read on their own, without the event loop around them.
 type settingsPane struct {
-	directory   string
-	fields      []config.Field
-	values      config.Values
-	original    config.Values
-	stop        func() string
-	message     string
-	input       string
-	selected    int
+	directory string
+	fields    []config.Field
+	values    config.Values
+	original  config.Values
+	stop      func() string
+	message   string
+	input     string
+	selected  int
+	// top is the first field the list shows. A pane shorter than the settings it holds scrolls,
+	// and the selection has to stay inside the window or the user is navigating a list they
+	// cannot see — which is what the footer alone reporting the move looks like.
+	top         int
 	editing     bool
 	dirty       bool
 	confirmQuit bool
@@ -70,12 +74,12 @@ func Settings(in, out *os.File, directory string, values config.Values, status, 
 	signal.Notify(resize, syscall.SIGWINCH)
 	defer signal.Stop(resize)
 	for {
-		width, _ := terminal.Size()
+		width, rows := terminal.Size()
 		currentStatus := ""
 		if status != nil {
 			currentStatus = status()
 		}
-		terminal.Frame(pane.view(currentStatus, width))
+		terminal.Frame(pane.view(currentStatus, width, rows))
 		var key string
 		select {
 		case result := <-keys:
@@ -187,8 +191,49 @@ type keyResult struct {
 	err error
 }
 
-func (p *settingsPane) view(status string, width int) string {
-	if width < 1 {
+// settingsChrome is how many lines the view spends on everything that is not the field list: the
+// leading blank, the title, the blank under it, and the six-line footer.
+const settingsChrome = 9
+
+// window keeps the selection inside the visible slice of the list, scrolling by as little as it
+// takes. It is called from the view, because how many fields fit is only known once the pane knows
+// how tall it is.
+func (p *settingsPane) window(rows int) (top, height int) {
+	height = max(rows-settingsChrome, 1)
+	if height >= len(p.fields) {
+		p.top = 0
+		return 0, len(p.fields)
+	}
+	p.top = min(p.top, len(p.fields)-height)
+	p.top = max(p.top, 0)
+	if p.selected < p.top {
+		p.top = p.selected
+	}
+	if p.selected >= p.top+height {
+		p.top = p.selected - height + 1
+	}
+	return p.top, height
+}
+
+// scrollNote says what the window is hiding, in the blank line the list already had under it, so
+// saying it costs no row.
+func (p *settingsPane) scrollNote(top, height int) string {
+	below := len(p.fields) - top - height
+	parts := make([]string, 0, 2)
+	if top > 0 {
+		parts = append(parts, fmt.Sprintf("↑ %d more", top))
+	}
+	if below > 0 {
+		parts = append(parts, fmt.Sprintf("↓ %d more", below))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "  " + Dim(strings.Join(parts, " · "))
+}
+
+func (p *settingsPane) view(status string, width, rows int) string {
+	if width < 1 || rows < 1 {
 		return ""
 	}
 	header := config.Path(p.directory)
@@ -202,7 +247,9 @@ func (p *settingsPane) view(status string, width int) string {
 	}
 	valueWidth := max(width-labelWidth-8, 16)
 	lines := []string{"", "  " + Bold("herdr-review-loop settings") + "   " + Dim(Clip(header, width-4)), ""}
-	for index, field := range p.fields {
+	top, height := p.window(rows)
+	for index, field := range p.fields[top : top+height] {
+		index += top
 		label := field.Label + strings.Repeat(" ", labelWidth-len([]rune(field.Label)))
 		marker := " "
 		if index == p.selected {
@@ -231,6 +278,9 @@ func (p *settingsPane) view(status string, width int) string {
 		message = ""
 	}
 	hint := p.fields[p.selected].Hint
-	lines = append(lines, "", "  "+Dim(Clip(hint, width-4)), "", "  "+Dim(Clip(message, width-4)), "", "  "+Dim(Clip(keys, width-4)))
+	lines = append(lines, p.scrollNote(top, height), "  "+Dim(Clip(hint, width-4)), "", "  "+Dim(Clip(message, width-4)), "", "  "+Dim(Clip(keys, width-4)))
+	if len(lines) > rows {
+		lines = lines[:rows]
+	}
 	return strings.Join(lines, "\n")
 }

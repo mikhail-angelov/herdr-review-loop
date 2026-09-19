@@ -88,3 +88,28 @@ func TestLatestFeedIsEmptyWithoutRuns(t *testing.T) {
 		t.Fatalf("feed %+v", feed)
 	}
 }
+
+func TestLogDocumentCarriesTheDetailThePanelHasToClip(t *testing.T) {
+	state := t.TempDir()
+	log := Log{StateDir: state}
+	if err := log.WriteRun(RunRecord{ID: "2026-08-09T12-00-00Z", Repository: "/repo", Rounds: 1, Outcome: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Write("review unreadable, asking for a reformat"); err != nil {
+		t.Fatal(err)
+	}
+	archive := openArchive(t, state, "2026-08-09T12-00-00Z")
+	detail := "no output from gemini @ reviewer (w1:p2) for 5m0s, which is a very long line the panel cannot hold"
+	if err := archive.Event(1, PhaseReview, EventStall, detail); err != nil {
+		t.Fatal(err)
+	}
+	document := LogDocument(state, "/repo")
+	for _, want := range []string{detail, "review unreadable", "/repo", "events", "journal"} {
+		if !strings.Contains(document, want) {
+			t.Fatalf("the log document is missing %q:\n%s", want, document)
+		}
+	}
+	if got := LogDocument(state, "/elsewhere"); strings.Contains(got, detail) {
+		t.Fatalf("another repository's run leaked into the log: %s", got)
+	}
+}

@@ -15,6 +15,11 @@ type PanelState struct {
 	Author, Reviewer, Phase, Message string
 	Events                           []string
 	Running                          bool
+	// Scope is what a run started here would review, and Changes how much that covers. They are
+	// shown before a run rather than after it, because the scope is the one setting whose wrong
+	// value cannot be told from a clean review.
+	Scope   string
+	Changes string
 	// Pending names the boundary the loop is waiting at, empty when it is not waiting. Paused is
 	// the request that produces one: asked for at any moment, honored at the next boundary.
 	Pending string
@@ -47,7 +52,14 @@ func PanelView(state PanelState, width, rows int) string {
 	} else if state.Paused && state.Running {
 		status = "⏸ pausing"
 	}
-	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width), Clip(state.Phase, width)}
+	header := []string{Bold(Clip("herdr-review-loop  "+status, width)), Clip("author   "+state.Author, width), Clip("review by "+state.Reviewer, width)}
+	if state.Scope != "" {
+		header = append(header, Clip("scope    "+state.Scope, width))
+	}
+	if state.Changes != "" {
+		header = append(header, Clip("changes  "+state.Changes, width))
+	}
+	header = append(header, Clip(state.Phase, width))
 	if state.Summary != "" {
 		header = append(header, Clip(state.Summary, width))
 	}
@@ -90,18 +102,18 @@ func PanelView(state PanelState, width, rows int) string {
 // panelHints are the keys that do something in the state the panel is in. A key that would be
 // refused is not offered: the panel is the only place these boundaries are explained.
 func panelHints(state PanelState, width, rows int) []string {
-	hints := []string{"r review", "o one-shot", "f finish", "v findings", "d diff", "h history", "s settings", "q close"}
+	hints := []string{"r review", "o one-shot", "f finish", "v findings", "d diff", "l log", "h history", "s settings", "q close"}
 	switch {
 	case state.Busy && !state.Running:
-		hints = []string{"v findings", "d diff", "h history", "s settings", "q close"}
+		hints = []string{"v findings", "d diff", "l log", "h history", "s settings", "q close"}
 	case state.Pending == PendingOneShot:
-		hints = []string{"a apply", "c cancel", "i instruction", "v findings", "d diff", "x stop", "q close"}
+		hints = []string{"a apply", "c cancel", "i instruction", "v findings", "d diff", "l log", "x stop", "q close"}
 	case state.Pending == PendingGate:
-		hints = []string{"c continue", "n one round", "i instruction", "v findings", "d diff", "x stop", "q close"}
+		hints = []string{"c continue", "n one round", "i instruction", "v findings", "d diff", "l log", "x stop", "q close"}
 	case state.Running && state.Paused:
-		hints = []string{"p resume", "x stop", "v findings", "d diff", "q close"}
+		hints = []string{"p resume", "x stop", "v findings", "d diff", "l log", "q close"}
 	case state.Running:
-		hints = []string{"p pause", "x stop", "v findings", "d diff", "s settings", "q close"}
+		hints = []string{"p pause", "x stop", "v findings", "d diff", "l log", "s settings", "q close"}
 	}
 	lines := wrapHints(hints, width)
 	// a short pane keeps the first key and the one that closes the pane, and gives up the ones in
@@ -137,7 +149,7 @@ func wrapHints(hints []string, width int) []string {
 // nothing left to show and exits, which ends its pane; on failure — a loop still
 // running — the reason stays on screen instead of vanishing with the pane.
 type PanelActions struct {
-	Review, OneShot, Stop, Settings, History, Findings, Diff, Pause func() string
+	Review, OneShot, Stop, Settings, History, Findings, Diff, Log, Pause func() string
 	// Answer carries one choice to whatever the loop is waiting for. The panel decides which
 	// actions a boundary offers; the loop decides what each one means.
 	Answer func(action, text string) string
@@ -250,6 +262,8 @@ func panelKey(key string, state PanelState, actions PanelActions, message string
 		return actions.Findings(), false, input, false
 	case "d":
 		return actions.Diff(), false, input, false
+	case "l":
+		return actions.Log(), false, input, false
 	case "x":
 		return actions.Stop(), false, input, false
 	case "s":

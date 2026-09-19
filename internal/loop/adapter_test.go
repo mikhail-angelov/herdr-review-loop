@@ -83,7 +83,7 @@ func TestARoundMayNameADifferentCommand(t *testing.T) {
 // the branch, so those rounds take the built-in prompt — unless the round names a command itself,
 // which is the user saying their command does something else.
 func TestABranchReviewIsNotDelegatedToACommandThatScopesItself(t *testing.T) {
-	branch := Scope{Spec: "branch:main", BaseRef: "main", Base: "abc123"}
+	branch := Scope{Spec: "branch:main", Kind: config.ScopeBranch, BaseRef: "main", Base: "abc123"}
 	if _, delegated := Adapt("codex", nil, Policy(nil, 1), branch, "/review.json", nil); delegated {
 		t.Fatal("a branch review was handed to a command that only sees uncommitted changes")
 	}

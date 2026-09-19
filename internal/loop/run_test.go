@@ -729,7 +729,7 @@ func TestATextScopeRunsOverADocument(t *testing.T) {
 		t.Fatalf("the author was not pointed at the document:\n%s", client.prompts[1])
 	}
 	manifest, found := ReadManifest(state, ListRuns(state)[0].ID)
-	if !found || manifest.Scope != values.Scope || !strings.Contains(manifest.ScopeCommand, "docs/plan.md") {
+	if !found || !strings.Contains(manifest.Scope, "docs/plan.md") || !strings.Contains(manifest.ScopeCommand, "docs/plan.md") {
 		t.Fatalf("manifest %+v", manifest)
 	}
 }

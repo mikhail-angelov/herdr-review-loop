@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -554,7 +555,7 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 	var pair struct {
 		sync.RWMutex
 		author, reviewer, message string
-		scope, changes            string
+		scope, changes, spec      string
 	}
 	pair.author = environment.Context.FocusedPaneID
 	refreshPair := func() {
@@ -562,6 +563,7 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 		defer cancel()
 		values := resolve(nil).Values
 		scopeText, changesText := "", ""
+		spec := values.Scope
 		if repository, err := environment.Repository(); err == nil {
 			scopeText, changesText = loop.PanelScope(ctx, repository, values.Scope)
 		}
@@ -581,7 +583,7 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 		}
 		pair.Lock()
 		pair.author, pair.reviewer, pair.message = authorText, reviewerText, message
-		pair.scope, pair.changes = scopeText, changesText
+		pair.scope, pair.changes, pair.spec = scopeText, changesText, spec
 		pair.Unlock()
 	}
 	done := make(chan struct{})
@@ -637,6 +639,41 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 			return "opened " + entrypoint
 		}
 	}
+	scopes := func() []ui.ScopeOption {
+		pair.RLock()
+		spec := pair.spec
+		pair.RUnlock()
+		options := make([]ui.ScopeOption, 0, 5)
+		for _, choice := range []struct{ label, spec string }{
+			{"auto — decide for me", config.ScopeAuto},
+			{"worktree — uncommitted changes", config.ScopeWorktree},
+			{"branch — against the branch it came from", config.ScopeBranch},
+		} {
+			options = append(options, ui.ScopeOption{Label: choice.label, Spec: choice.spec, Current: choice.spec == spec})
+		}
+		typed := ui.ScopeOption{Label: "type one — branch:<ref> or text:<path>"}
+		// a scope with an argument cannot be a fixed row, so the row that asks for one carries the
+		// current mark whenever the setting is one of those
+		typed.Current = !slices.ContainsFunc(options, func(option ui.ScopeOption) bool { return option.Current })
+		return append(options, typed)
+	}
+	setScope := func(spec string) string {
+		values := resolve(nil).Values
+		parsed, err := config.Parse("scope", spec)
+		if err != nil {
+			return "scope: " + err.Error()
+		}
+		if err := config.Apply(&values, "scope", parsed); err != nil {
+			return "scope: " + err.Error()
+		}
+		if _, err := config.Save(environment.ConfigDir, values); err != nil {
+			return err.Error()
+		}
+		// the scope line is read from the configuration by the background refresh, so ask for one
+		// now rather than leaving the panel showing what was true a moment ago
+		signalTo(nudge)
+		return "scope → " + spec
+	}
 	return ui.Panel(os.Stdin, os.Stdout, refresh, wake, ui.PanelActions{
 		Review:   func() string { return startReview(environment, "") },
 		OneShot:  func() string { return startReview(environment, "--one-shot") },
@@ -645,6 +682,8 @@ func panel(environment herdr.Environment, client herdr.Client, resolve func(map[
 		Findings: open("findings"),
 		Diff:     open("diff"),
 		Log:      open("log"),
+		Scopes:   scopes,
+		SetScope: setScope,
 		Stop: func() string {
 			if err := stopRun(client, environment); err != nil {
 				return err.Error()

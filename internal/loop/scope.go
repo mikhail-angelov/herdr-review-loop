@@ -23,7 +23,10 @@ import (
 // text: earns its place by being genuinely different — the reviewed thing is a whole document
 // rather than a diff, and the author edits that document.
 type Scope struct {
+	// Spec is the scope as configured, Kind what it resolved to. They differ only for auto, which
+	// is a decision rather than a scope: it is made once, against the repository, before the run.
 	Spec string
+	Kind string
 	// Document is the repository-relative path under review, empty for the worktree scope.
 	Document string
 	// Absolute is the path the agents are given, which they can write from any working directory.
@@ -39,11 +42,14 @@ type Scope struct {
 // once the repository is open.
 func ParseScope(spec string) (Scope, error) {
 	spec = strings.TrimSpace(spec)
-	if spec == "" || spec == config.ScopeWorktree {
-		return Scope{Spec: config.ScopeWorktree}, nil
+	if spec == "" || spec == config.ScopeAuto {
+		return Scope{Spec: config.ScopeAuto, Kind: config.ScopeAuto}, nil
+	}
+	if spec == config.ScopeWorktree {
+		return Scope{Spec: config.ScopeWorktree, Kind: config.ScopeWorktree}, nil
 	}
 	if spec == config.ScopeBranch || spec == config.ScopeBranchPrefix {
-		return Scope{Spec: config.ScopeBranch}, nil
+		return Scope{Spec: config.ScopeBranch, Kind: config.ScopeBranch}, nil
 	}
 	if ref, isBranch := strings.CutPrefix(spec, config.ScopeBranchPrefix); isBranch {
 		ref = strings.TrimSpace(ref)
@@ -51,7 +57,7 @@ func ParseScope(spec string) (Scope, error) {
 		if strings.HasPrefix(ref, "-") {
 			return Scope{}, fmt.Errorf("scope base %q is not a ref", ref)
 		}
-		return Scope{Spec: config.ScopeBranchPrefix + ref, BaseRef: ref}, nil
+		return Scope{Spec: config.ScopeBranchPrefix + ref, Kind: config.ScopeBranch, BaseRef: ref}, nil
 	}
 	path, isText := strings.CutPrefix(spec, config.ScopeTextPrefix)
 	if !isText {
@@ -65,20 +71,47 @@ func ParseScope(spec string) (Scope, error) {
 	if filepath.IsAbs(path) || clean == ".." || strings.HasPrefix(clean, "../") {
 		return Scope{}, fmt.Errorf("scope document %q must be inside the repository", path)
 	}
-	return Scope{Spec: config.ScopeTextPrefix + clean, Document: clean}, nil
+	return Scope{Spec: config.ScopeTextPrefix + clean, Kind: config.ScopeText, Document: clean}, nil
 }
 
 // Text reports whether this run reviews a document rather than a diff.
-func (s Scope) Text() bool { return s.Document != "" }
+func (s Scope) Text() bool { return s.Kind == config.ScopeText }
 
 // Branch reports whether this run reviews a branch rather than the uncommitted changes alone.
-func (s Scope) Branch() bool {
-	return s.Spec == config.ScopeBranch || strings.HasPrefix(s.Spec, config.ScopeBranchPrefix)
+func (s Scope) Branch() bool { return s.Kind == config.ScopeBranch }
+
+// Describe is the scope in one line, for the panel, the dry run and the manifest. A scope that was
+// decided rather than configured says both: what it was asked to do, and what it settled on.
+func (s Scope) Describe() string {
+	settled := "uncommitted changes"
+	switch {
+	case s.Text():
+		settled = "document " + s.Document
+	case s.Branch() && s.Base != "":
+		settled = fmt.Sprintf("branch vs %s at %s", s.BaseRef, shortCommit(s.Base))
+	case s.Branch():
+		settled = "branch vs " + s.BaseRef
+	case s.Kind == config.ScopeAuto:
+		return config.ScopeAuto
+	}
+	if s.Spec == config.ScopeAuto {
+		return config.ScopeAuto + " → " + settled
+	}
+	return settled
 }
 
 // Resolve checks that the scope names something reviewable and fills in the absolute path the
 // agents are given. A document that is not there is the user's setup, so it fails before the lock.
 func (s Scope) Resolve(ctx context.Context, dir *RunDir, repository string) (Scope, error) {
+	if s.Kind == config.ScopeAuto {
+		s.Kind = config.ScopeWorktree
+		// a branch that has left its base carries work no worktree diff can see, and that is
+		// exactly where reviewing the working tree alone quietly reviews nothing at all
+		if base, ref, err := resolveBase(ctx, repository, ""); err == nil {
+			s.Kind, s.Base, s.BaseRef = config.ScopeBranch, base, ref
+		}
+		return s, nil
+	}
 	if s.Branch() {
 		base, ref, err := resolveBase(ctx, repository, s.BaseRef)
 		if err != nil {
@@ -202,20 +235,19 @@ var shortstat = regexp.MustCompile(`(\d+) files? changed(?:, (\d+) insertions?\(
 // have used, because a panel that hides a broken setting is worse than one that names it.
 func PanelScope(ctx context.Context, repository, spec string) (scope, changes string) {
 	parsed, err := ParseScope(spec)
-	switch {
-	case err != nil:
+	if err != nil {
 		return spec + " — " + err.Error(), ""
-	case parsed.Text():
-		return "document " + parsed.Document, ""
-	case parsed.Branch():
-		resolved, resolveErr := parsed.Resolve(ctx, nil, repository)
-		if resolveErr != nil {
-			return parsed.Spec + " — " + resolveErr.Error(), ""
-		}
-		return fmt.Sprintf("branch vs %s at %s", resolved.BaseRef, shortCommit(resolved.Base)), changeSummary(ctx, repository, resolved.start())
-	default:
-		return "uncommitted changes", changeSummary(ctx, repository, "HEAD")
 	}
+	// a document scope is the one that needs the run directory to resolve, and the one whose
+	// description needs nothing resolved at all
+	if parsed.Text() {
+		return parsed.Describe(), ""
+	}
+	resolved, err := parsed.Resolve(ctx, nil, repository)
+	if err != nil {
+		return parsed.Spec + " — " + err.Error(), ""
+	}
+	return resolved.Describe(), changeSummary(ctx, repository, resolved.start())
 }
 
 // changeSummary is how much the scope covers, in the shape a narrow panel can hold. Untracked

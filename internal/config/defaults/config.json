@@ -1,6 +1,6 @@
 {
   "profile": "default",
-  "scope": "worktree",
+  "scope": "auto",
   "reviewer": { "kind": "", "name": "" },
   "max_iterations": 10,
   "min_verdict": "confirmed",

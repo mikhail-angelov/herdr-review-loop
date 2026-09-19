@@ -10,7 +10,8 @@ gives each finding an id, the author applies what it agrees with and decides eve
 `decisions.json`, and the loop repeats until the review comes back clean, the round budget runs out,
 or an agent gets stuck. Every scope ends at the working tree, because that is all the author may
 edit; what differs is where the comparison starts — `HEAD` for the uncommitted changes, the merge
-base for a whole branch.
+base for a whole branch. The default, `auto`, decides between those two against the repository
+itself, once, before the first round.
 
 The run directory is hidden from git through `.git/info/exclude`, so nothing the loop writes reaches
 the diff under review or a round checkpoint. Everything a run produced is archived under the plugin
@@ -85,7 +86,9 @@ go test -run TestName ./internal/loop/
     panel clips every event to one line of a narrow pane, and the detail is usually the point.
   - `scope.go`'s `PanelScope` is what the panel shows before a run: the scope, resolved far enough
     to name what it compares against, and a diffstat. It is best-effort and never fails — a scope
-    that cannot be resolved says so where it would have been shown.
+    that cannot be resolved says so where it would have been shown. The panel's `e` picker writes
+    the `scope` setting through the same `config.Save` the settings pane uses: a scope the loop
+    decided is still a setting, and overriding it must survive the pane that overrode it.
   - `run.go`'s `label` publishes each agent's phase as pane metadata instead of focusing its pane.
     A run that stole focus on every attempt moved the user's cursor a dozen times; the sidebar says
     the same thing for both agents at once. Focus is taken only when an agent is blocked.

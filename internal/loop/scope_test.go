@@ -7,12 +7,13 @@ import (
 
 func TestParseScopeReadsEverySpecAndRejectsTheRest(t *testing.T) {
 	for spec, want := range map[string]Scope{
-		"":                   {Spec: "worktree"},
-		"worktree":           {Spec: "worktree"},
-		"branch":             {Spec: "branch"},
-		"branch:":            {Spec: "branch"},
-		"branch:origin/main": {Spec: "branch:origin/main", BaseRef: "origin/main"},
-		"text:docs/plan.md":  {Spec: "text:docs/plan.md", Document: "docs/plan.md"},
+		"":                   {Spec: "auto", Kind: "auto"},
+		"auto":               {Spec: "auto", Kind: "auto"},
+		"worktree":           {Spec: "worktree", Kind: "worktree"},
+		"branch":             {Spec: "branch", Kind: "branch"},
+		"branch:":            {Spec: "branch", Kind: "branch"},
+		"branch:origin/main": {Spec: "branch:origin/main", Kind: "branch", BaseRef: "origin/main"},
+		"text:docs/plan.md":  {Spec: "text:docs/plan.md", Kind: "text", Document: "docs/plan.md"},
 	} {
 		got, err := ParseScope(spec)
 		if err != nil || got != want {
@@ -105,5 +106,58 @@ func TestPanelScopeNamesWhatWouldBeReviewedAndHowMuchOfIt(t *testing.T) {
 	broken, changes := PanelScope(t.Context(), repository, "staged")
 	if !strings.HasPrefix(broken, "staged — ") || changes != "" {
 		t.Fatalf("a scope nobody can resolve must say so: %q / %q", broken, changes)
+	}
+}
+
+// auto is what the panel shows before anyone has configured anything, so it has to pick the scope
+// a person would have picked: the branch when there is one, and the working tree otherwise.
+func TestAutoReviewsTheBranchWhenThereIsOneAndTheWorktreeWhenThereIsNot(t *testing.T) {
+	repository := newRepository(t)
+	auto, err := ParseScope("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// on the default branch with nothing else to compare against, auto is the working tree
+	onMain, err := auto.Resolve(t.Context(), nil, repository)
+	if err != nil || onMain.Branch() || onMain.start() != "HEAD" {
+		t.Fatalf("on main: %#v %v", onMain, err)
+	}
+	if got := onMain.Describe(); got != "auto → uncommitted changes" {
+		t.Fatalf("described %q", got)
+	}
+
+	// a branch with a commit of its own is reviewed as a branch, uncommitted changes included
+	base := strings.TrimSpace(run(t, repository, "rev-parse", "HEAD"))
+	run(t, repository, "checkout", "-b", "feature")
+	writeRepoFile(t, repository, "tracked.txt", "two\n")
+	run(t, repository, "commit", "-am", "on the branch")
+	onBranch, err := auto.Resolve(t.Context(), nil, repository)
+	if err != nil || !onBranch.Branch() || onBranch.Base != base || onBranch.BaseRef != "main" {
+		t.Fatalf("on a branch: %#v %v", onBranch, err)
+	}
+	if got := onBranch.Describe(); !strings.HasPrefix(got, "auto → branch vs main at ") {
+		t.Fatalf("described %q", got)
+	}
+
+	// a branch with no commits of its own has nothing a worktree diff would miss
+	run(t, repository, "checkout", "main")
+	run(t, repository, "checkout", "-b", "empty")
+	fresh, err := auto.Resolve(t.Context(), nil, repository)
+	if err != nil || fresh.Branch() {
+		t.Fatalf("on a branch with no commits: %#v %v", fresh, err)
+	}
+}
+
+func TestAutoFallsBackToTheWorktreeOutsideGit(t *testing.T) {
+	auto, err := ParseScope("auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// resolving must never fail on a directory git knows nothing about: the run is what reports
+	// that, and it reports it about the review, not about the scope
+	resolved, err := auto.Resolve(t.Context(), nil, t.TempDir())
+	if err != nil || resolved.Branch() || resolved.Text() {
+		t.Fatalf("%#v %v", resolved, err)
 	}
 }

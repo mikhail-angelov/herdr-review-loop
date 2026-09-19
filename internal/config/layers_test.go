@@ -22,7 +22,7 @@ func writeLayer(t *testing.T, dir, name, contents string) string {
 
 func TestBuiltinDefaultsDecodeCleanly(t *testing.T) {
 	values := Defaults()
-	if values.Profile != "default" || values.Scope != ScopeWorktree || values.MinVerdict != VerdictConfirmed {
+	if values.Profile != "default" || values.Scope != ScopeAuto || values.MinVerdict != VerdictConfirmed {
 		t.Fatalf("built-in defaults %#v", values)
 	}
 	if values.MaxIterations != 10 || values.Retries != 1 || values.Archive.Keep != 20 || !values.Archive.RawOutput {

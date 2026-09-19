@@ -675,7 +675,8 @@ justified and gets its own specification then, with those runs as evidence. Not 
 
 | Spec | Reviewed | Native mapping | The author edits |
 |---|---|---|---|
-| `worktree` | uncommitted changes (default) | `codex review --uncommitted` | code |
+| `auto` | decided against the repository (default) | as the scope it picks | code |
+| `worktree` | uncommitted changes | `codex review --uncommitted` | code |
 | `branch[:<ref>]` | everything this branch changes relative to the branch it came from | none — the built-in prompt | code |
 | `text:<path>` | one document, whole | custom instruction | the document |
 
@@ -683,6 +684,13 @@ Every scope **ends** at the working tree, because the author may only edit the w
 (§2.2: no commits, no amends, no staging). A scope that ended at the index or at `HEAD` could
 not see the author's fixes at all — round two would re-review a byte-identical diff and the
 loop could never converge. What a scope may vary is where the comparison **starts**.
+
+`auto` is not a scope but a decision, made once, before the first round: a branch that has
+commits its base does not is reviewed as a branch, everything else as the working tree. It is the
+default because the wrong scope is the one mistake a clean review cannot reveal — a branch
+reviewed as a working tree comes back clean having read nothing — and because the answer is
+knowable from the repository. What it settled on is what the panel, the dry run and the manifest
+report; a repository git cannot answer for falls back to `worktree` rather than failing.
 
 `worktree` starts at `HEAD`. `branch` starts at the commit this branch and its base last had in
 common, which is the one thing `worktree` genuinely cannot express: work that is already

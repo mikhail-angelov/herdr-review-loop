@@ -29,6 +29,20 @@ type PanelState struct {
 	// history and nothing else: offering to start a review that the lock would refuse is worse
 	// than not offering one.
 	Busy bool
+	// Picker is an open list the user is choosing from, and Picked the row the marker sits on. It
+	// takes the place of the event feed while it is open: choosing is a moment, and the feed is
+	// still there afterwards.
+	Picker []ScopeOption
+	Picked int
+}
+
+// ScopeOption is one row of the scope picker: what it says, what it sets, and whether it is what a
+// run started here would use now. An option with no Spec is the one that asks for a scope to be
+// typed, which is how the two scopes that take an argument are reached.
+type ScopeOption struct {
+	Label   string
+	Spec    string
+	Current bool
 }
 
 // The pending kinds the panel offers choices for. They are the loop's own names for its
@@ -76,6 +90,9 @@ func PanelView(state PanelState, width, rows int) string {
 		}
 		tail = append(tail, Clip(line, width))
 	}
+	if len(state.Picker) > 0 {
+		tail = pickerLines(state, width)
+	}
 	budget := rows - len(header) - len(footer)
 	if state.Message != "" {
 		budget--
@@ -99,11 +116,32 @@ func PanelView(state PanelState, width, rows int) string {
 	return strings.Join(lines, "\n")
 }
 
+// pickerLines renders the open list where the event feed was. The rows are ordered by the caller,
+// so what the panel offers and what the binary does with the answer stay one list.
+func pickerLines(state PanelState, width int) []string {
+	lines := make([]string, 0, len(state.Picker))
+	for index, option := range state.Picker {
+		label := option.Label
+		if option.Current {
+			label += "  ← current"
+		}
+		marker := "  "
+		if index == state.Picked {
+			marker = "▸ "
+			label = Bold(label)
+		}
+		lines = append(lines, Clip(marker, width)+Clip(label, max(width-2, 1)))
+	}
+	return lines
+}
+
 // panelHints are the keys that do something in the state the panel is in. A key that would be
 // refused is not offered: the panel is the only place these boundaries are explained.
 func panelHints(state PanelState, width, rows int) []string {
-	hints := []string{"r review", "o one-shot", "f finish", "v findings", "d diff", "l log", "h history", "s settings", "q close"}
+	hints := []string{"r review", "o one-shot", "e scope", "f finish", "v findings", "d diff", "l log", "h history", "s settings", "q close"}
 	switch {
+	case len(state.Picker) > 0:
+		hints = []string{"j/k move", "enter choose", "esc cancel"}
 	case state.Busy && !state.Running:
 		hints = []string{"v findings", "d diff", "l log", "h history", "s settings", "q close"}
 	case state.Pending == PendingOneShot:
@@ -153,7 +191,31 @@ type PanelActions struct {
 	// Answer carries one choice to whatever the loop is waiting for. The panel decides which
 	// actions a boundary offers; the loop decides what each one means.
 	Answer func(action, text string) string
-	Finish func() (string, bool)
+	// Scopes lists what the scope picker offers, current state included, and SetScope applies one.
+	// A scope decided automatically is still a setting, so choosing here is choosing for good —
+	// picking auto again is how the decision is handed back.
+	Scopes   func() []ScopeOption
+	SetScope func(spec string) string
+	Finish   func() (string, bool)
+}
+
+// panelInput is an open text field: what it is asking for, what has been typed, and what to do
+// with it. The panel has two things to type — an instruction for the author and a scope — and they
+// differ only in those three values.
+type panelInput struct {
+	label  string
+	value  string
+	submit func(string) string
+}
+
+// panelUI is the panel's own transient state. None of it outlives the pane, and none of it is loop
+// state: closing the panel while a list is open cancels nothing but the list.
+type panelUI struct {
+	message string
+	input   *panelInput
+	picking bool
+	picked  int
+	exit    bool
 }
 
 // Panel keeps no mutable loop state: each refresh gets its display state from files
@@ -192,23 +254,24 @@ func Panel(in, out *os.File, refresh func() PanelState, wake <-chan struct{}, ac
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM)
 	defer signal.Stop(quit)
-	message := ""
-	custom, input := false, ""
+	pane := panelUI{}
 	for {
 		state := refresh()
-		if custom {
-			state.Message = "instruction: " + input + Invert(" ")
+		if pane.input != nil {
+			state.Message = pane.input.label + ": " + pane.input.value + Invert(" ")
 		}
-		if message != "" {
-			state.Message = message
+		if pane.message != "" {
+			state.Message = pane.message
+		}
+		if pane.picking && actions.Scopes != nil {
+			state.Picker, state.Picked = actions.Scopes(), pane.picked
 		}
 		width, rows := terminal.Size()
 		terminal.Frame(PanelView(state, width, rows))
 		select {
 		case key := <-keys:
-			var exitPanel bool
-			message, custom, input, exitPanel = panelKey(key, state, actions, message, custom, input)
-			if exitPanel {
+			pane = panelKey(key, state, actions, pane)
+			if pane.exit {
 				return nil
 			}
 		case <-quit:
@@ -220,80 +283,143 @@ func Panel(in, out *os.File, refresh func() PanelState, wake <-chan struct{}, ac
 	}
 }
 
-func panelKey(key string, state PanelState, actions PanelActions, message string, custom bool, input string) (nextMessage string, nextCustom bool, nextInput string, exitPanel bool) {
-	if custom {
-		return customPanelKey(key, actions, message, input)
+// panelKey folds one keypress into the panel's state. An open input or an open list takes every
+// key: a pane with two ways to read the same letter is a pane that surprises people.
+func panelKey(key string, state PanelState, actions PanelActions, pane panelUI) panelUI {
+	if pane.input != nil {
+		return inputKey(key, pane)
+	}
+	if pane.picking {
+		return pickerKey(key, state, actions, pane)
+	}
+	if state.Pending != "" {
+		if answered, handled := pendingKey(key, state, actions, pane); handled {
+			return answered
+		}
 	}
 	switch shortcut(key) {
 	case "q", "\x03", "esc":
-		return message, false, input, true
+		pane.exit = true
 	case "r":
 		if state.Pending == "" && !state.Busy {
-			return actions.Review(), false, input, false
+			pane.message = actions.Review()
 		}
 	case "o":
 		if state.Pending == "" && !state.Busy {
-			return actions.OneShot(), false, input, false
+			pane.message = actions.OneShot()
 		}
-	case "a":
-		if state.Pending == PendingOneShot {
-			return actions.Answer("apply", ""), false, input, false
-		}
-	case "c":
-		if state.Pending == PendingOneShot {
-			return actions.Answer("cancel", ""), false, input, false
-		}
-		if state.Pending == PendingGate {
-			return actions.Answer("continue", ""), false, input, false
-		}
-	case "n":
-		if state.Pending == PendingGate {
-			return actions.Answer("step", ""), false, input, false
-		}
-	case "i":
-		if state.Pending != "" {
-			return "", true, "", false
+	case "e":
+		if actions.Scopes != nil {
+			pane.message, pane.picking, pane.picked = "", true, currentScope(actions.Scopes())
 		}
 	case "p":
 		if state.Running && state.Pending == "" {
-			return actions.Pause(), false, input, false
+			pane.message = actions.Pause()
 		}
 	case "v":
-		return actions.Findings(), false, input, false
+		pane.message = actions.Findings()
 	case "d":
-		return actions.Diff(), false, input, false
+		pane.message = actions.Diff()
 	case "l":
-		return actions.Log(), false, input, false
+		pane.message = actions.Log()
 	case "x":
-		return actions.Stop(), false, input, false
+		pane.message = actions.Stop()
 	case "s":
-		return actions.Settings(), false, input, false
+		pane.message = actions.Settings()
 	case "h":
-		return actions.History(), false, input, false
+		pane.message = actions.History()
 	case "f":
-		result, finished := actions.Finish()
-		return result, false, input, finished
+		pane.message, pane.exit = actions.Finish()
 	}
-	return message, false, input, false
+	return pane
 }
 
-func customPanelKey(key string, actions PanelActions, message, input string) (nextMessage string, nextCustom bool, nextInput string, exitPanel bool) {
+// pendingKey answers the boundary the loop is waiting at, and reports whether this key was one of
+// that boundary's own. Everything else falls through to the keys the panel always has.
+func pendingKey(key string, state PanelState, actions PanelActions, pane panelUI) (panelUI, bool) {
+	switch shortcut(key) {
+	case "a":
+		if state.Pending == PendingOneShot {
+			pane.message = actions.Answer("apply", "")
+			return pane, true
+		}
+	case "c":
+		if state.Pending == PendingOneShot {
+			pane.message = actions.Answer("cancel", "")
+			return pane, true
+		}
+		if state.Pending == PendingGate {
+			pane.message = actions.Answer("continue", "")
+			return pane, true
+		}
+	case "n":
+		if state.Pending == PendingGate {
+			pane.message = actions.Answer("step", "")
+			return pane, true
+		}
+	case "i":
+		pane.message, pane.input = "", &panelInput{label: "instruction", submit: func(text string) string {
+			return actions.Answer("instruct", text)
+		}}
+		return pane, true
+	}
+	return pane, false
+}
+
+// currentScope is the row the picker opens on: what a run started now would use.
+func currentScope(options []ScopeOption) int {
+	for index, option := range options {
+		if option.Current {
+			return index
+		}
+	}
+	return 0
+}
+
+// pickerKey drives the open list. Choosing an option with no spec opens the input instead, which
+// is how the scopes that take a ref or a path are reached.
+func pickerKey(key string, state PanelState, actions PanelActions, pane panelUI) panelUI {
+	switch shortcut(key) {
+	case "esc", "q", "\x03":
+		pane.picking = false
+	case "j", "down":
+		pane.picked = min(pane.picked+1, len(state.Picker)-1)
+	case "k", "up":
+		pane.picked = max(pane.picked-1, 0)
+	case "\r", "\n", "enter":
+		if pane.picked >= len(state.Picker) {
+			return pane
+		}
+		option := state.Picker[pane.picked]
+		pane.picking = false
+		if option.Spec == "" {
+			pane.input = &panelInput{label: "scope", submit: actions.SetScope}
+			return pane
+		}
+		pane.message = actions.SetScope(option.Spec)
+	}
+	return pane
+}
+
+// inputKey drives an open text field. The raw key is used rather than the shortcut, because this
+// is the one place a keypress means the character it produced.
+func inputKey(key string, pane panelUI) panelUI {
 	switch key {
 	case "esc":
-		return "instruction canceled", false, "", false
+		pane.message, pane.input = pane.input.label+" canceled", nil
 	case "\r", "\n":
-		if input != "" {
-			return actions.Answer("instruct", input), false, "", false
+		if pane.input.value != "" {
+			pane.message, pane.input = pane.input.submit(pane.input.value), nil
 		}
 	case "\x7f", "\b":
-		runes := []rune(input)
+		runes := []rune(pane.input.value)
 		if len(runes) > 0 {
-			input = string(runes[:len(runes)-1])
+			pane.input.value = string(runes[:len(runes)-1])
 		}
 	default:
 		if len(key) == 1 && key[0] >= 32 {
-			input += key
+			pane.input.value += key
 		}
 	}
-	return message, true, input, false
+	return pane
 }

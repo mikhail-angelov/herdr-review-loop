@@ -882,7 +882,7 @@ func (r Run) manifest(ctx context.Context, state *session, author, reviewer herd
 		Repository:    record.Repository,
 		Started:       record.Started,
 		Head:          head,
-		Scope:         state.scope.Spec,
+		Scope:         state.scope.Describe(),
 		ScopeCommand:  state.scope.Command(),
 		Profile:       r.Profile.Name,
 		ProfileLayer:  r.profileLayer(),
@@ -915,7 +915,7 @@ func (r Run) describe(author, reviewer herdr.Agent, runDir *RunDir, scope Scope)
 	lines := []string{
 		"author:   " + herdr.Describe(author),
 		"reviewer: " + herdr.Describe(reviewer),
-		"scope:    " + scope.Spec + "  (" + scope.Command() + ")",
+		"scope:    " + scope.Describe() + "  (" + scope.Command() + ")",
 		"profile:  " + r.Profile.Name + " (" + r.profileLayer() + ")",
 		"run dir:  " + runDir.Absolute(RunSubdir),
 	}

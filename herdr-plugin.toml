@@ -1,6 +1,6 @@
 id = "herdr-review-loop"
 name = "herdr-review-loop"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.7.5"
 description = "Review loop between the agent you are in and a reviewer agent in the same workspace."
 platforms = ["linux", "macos"]

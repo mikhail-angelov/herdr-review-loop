@@ -150,7 +150,7 @@ func advanced(ctx context.Context, client AgentClient, agent herdr.Agent, sequen
 }
 
 func resetCommand(agent herdr.Agent, configured string) string {
-	command := map[string]string{"claude": "/clear", "gemini": "/clear", "codex": "/new", "opencode": "/new"}[agent.Kind]
+	command := map[string]string{"claude": "/clear", "gemini": "/clear", "codex": "/new"}[agent.Kind]
 	if command != "" {
 		return command
 	}
@@ -160,6 +160,9 @@ func resetCommand(agent herdr.Agent, configured string) string {
 // ValidateResetCommand reports whether this agent kind can have its session cleared, so the loop
 // fails before doing any work rather than halfway through.
 func ValidateResetCommand(agent herdr.Agent, configured string) error {
+	if agent.Kind == "opencode" {
+		return nil
+	}
 	if resetCommand(agent, configured) == "" {
 		return fmt.Errorf("no reset command for %s", herdr.Describe(agent))
 	}
@@ -188,9 +191,24 @@ func (p ResetPace) orDefault() ResetPace {
 }
 
 // ResetSession clears an agent's context between rounds so each round is judged on the code, not
-// on what the agent remembers saying. The command is typed and read back before enter is sent,
-// because agents drop input while they are still redrawing.
+// on what the agent remembers saying. Text commands are read back before enter is sent because
+// agents drop input while redrawing. OpenCode uses its new-session key sequence instead, avoiding
+// slash-command autocomplete.
 func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, configured string, pace ResetPace, log func(string)) error {
+	pace = pace.orDefault()
+	if agent.Kind == "opencode" {
+		if err := client.PaneSendKeys(ctx, agent.PaneID, "ctrl+x"); err != nil {
+			return err
+		}
+		if !pause(ctx, pace.Echo) {
+			return interrupted(ctx)
+		}
+		if err := client.PaneSendKeys(ctx, agent.PaneID, "n"); err != nil {
+			return err
+		}
+		pause(ctx, pace.Settle)
+		return interrupted(ctx)
+	}
 	command := resetCommand(agent, configured)
 	if command == "" {
 		if log != nil {
@@ -198,7 +216,6 @@ func ResetSession(ctx context.Context, client AgentClient, agent herdr.Agent, co
 		}
 		return ValidateResetCommand(agent, configured)
 	}
-	pace = pace.orDefault()
 	for attempt := 1; attempt <= 3; attempt++ {
 		if err := client.PaneSendText(ctx, agent.PaneID, command); err != nil {
 			return err

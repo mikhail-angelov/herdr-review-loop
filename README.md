@@ -455,8 +455,10 @@ instead. The settings pane validates values before saving them, and leaves `roun
 Archive size is bounded by `archive.keep` and by nothing else, and raw model output is the
 bulk of it. Those are the two dials.
 
-Reset commands are built in for `claude` and `gemini` (`/clear`) and for `codex` and
-`opencode` (`/new`). Set `reset_command` only for an agent kind that is not one of those.
+Reset commands are built in for `claude` and `gemini` (`/clear`) and for `codex` (`/new`).
+`opencode` uses its default new-session keys: `Ctrl+X`, then `N`, bypassing slash-command
+autocomplete. Keep OpenCode's `leader` and `session_new` bindings at their defaults.
+Set `reset_command` only for an agent kind that is not one of those.
 
 ### Who decides what to look for
 

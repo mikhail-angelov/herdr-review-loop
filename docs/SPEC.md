@@ -248,8 +248,12 @@ the repository root and uses the same rooted-file containment as `review_file`.
 
 ### 5.5 Resetting agent sessions
 
-Built-in commands by agent kind: `claude`→`/clear`, `gemini`→`/clear`, `codex`→`/new`,
-`opencode`→`/new`. `reset_command` supplies a command only for an unknown agent kind.
+Built-in commands by agent kind: `claude`→`/clear`, `gemini`→`/clear`, `codex`→`/new`.
+`opencode` instead receives `pane send-keys <pane> ctrl+x`, waits 400 ms for the leader
+key, then receives `pane send-keys <pane> n` and waits 1500 ms for the new session.
+This uses OpenCode's default `leader` and `session_new` bindings and skips text input
+and readback, because slash-command autocomplete is not evidence of execution.
+`reset_command` supplies a command only for an unknown agent kind.
 A missing command for either agent fails the loop rather than retaining context.
 
 The command is **typed into the input line**, not sent as a prompt: `agent prompt`
